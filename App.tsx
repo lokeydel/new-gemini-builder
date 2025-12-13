@@ -4,14 +4,17 @@ import {
   SimulationSettings, SimulationStep, SimulationSpeed, SimulationStatus, 
   BatchStats
 } from './types';
-import { spinWheel, calculateWinnings } from './services/rouletteLogic';
+import { spinWheel, calculateWinnings, parseSequence } from './services/rouletteLogic';
 import { analyzeSimulationResults, analyzeBatchResults } from './services/geminiService';
 import { getPlacementIdentifier } from './utils/placements';
 import RouletteTable from './components/RouletteBoard';
 import StrategyPanel from './components/StrategyPanel';
 import ChipSelector from './components/ChipSelector';
 import StatsChart from './components/StatsChart';
+import SpinLog from './components/SpinLog';
 import { RotateCcw, Trash2 } from 'lucide-react';
+
+const FIB_SEQUENCE = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946, 17711];
 
 const App: React.FC = () => {
   // --- State ---
@@ -22,6 +25,7 @@ const App: React.FC = () => {
   
   // Strategy Config
   const [strategyConfig, setStrategyConfig] = useState<ProgressionConfig>({
+    strategyMode: 'STATIC',
     onWinAction: ProgressionAction.RESET,
     onWinValue: 0,
     onLossAction: ProgressionAction.MULTIPLY,
@@ -32,25 +36,34 @@ const App: React.FC = () => {
     resetOnSessionProfit: 150,
     useResetOnSessionProfit: false,
     baseUnit: 5,
+    sequence: "red, black",
+    onWinUnits: -1,
+    onLossUnits: 1,
+    minUnits: 1,
+    rotateOnWin: true,
+    rotateOnLoss: true
   });
 
   // Simulation Settings
   const [settings, setSettings] = useState<SimulationSettings>({
     startingBankroll: 1000,
     tableMin: 1,
-    tableMax: 5000,
+    tableMax: 1000,
     spinsPerSimulation: 100,
     numberOfSimulations: 1,
   });
 
-  const [speed, setSpeed] = useState<SimulationSpeed>('MEDIUM');
+  const [speed, setSpeed] = useState<SimulationSpeed>('FAST');
   const [simStatus, setSimStatus] = useState<SimulationStatus>('IDLE');
   const [batchStats, setBatchStats] = useState<BatchStats | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  
+  // UI State
+  const [isGraphFullScreen, setIsGraphFullScreen] = useState(false);
 
   // Refs for accessing latest state inside async loops
   const simStatusRef = useRef<SimulationStatus>('IDLE');
-  const speedRef = useRef<SimulationSpeed>('MEDIUM');
+  const speedRef = useRef<SimulationSpeed>('FAST');
   const pauseResolverRef = useRef<((value: void | PromiseLike<void>) => void) | null>(null);
   const nextSpinResolverRef = useRef<((value: void | PromiseLike<void>) => void) | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -184,10 +197,10 @@ const App: React.FC = () => {
         : analyzeBatchResults(stats);
 
       analysisPromise.then(analysis => {
-         // Only update if mounted and this analysis corresponds to the latest run
-         if(isMountedRef.current && analysisIdRef.current === runId) {
-             setAiAnalysis(analysis);
-         }
+        // Only update if mounted and this analysis corresponds to the latest run
+        if(isMountedRef.current && analysisIdRef.current === runId) {
+            setAiAnalysis(analysis);
+        }
       });
   };
 
@@ -195,12 +208,30 @@ const App: React.FC = () => {
     const numSims = settings.numberOfSimulations;
     const spinsPerSim = settings.spinsPerSimulation;
     
-    // Calculate total base bet amount
-    const baseBetAmount = currentBets.reduce((sum, b) => sum + b.amount, 0);
-    if (baseBetAmount === 0) {
-        alert("Please place bets first!");
-        setSimStatus('IDLE');
-        return;
+    // --- MODE CHECK: STATIC ---
+    if (strategyConfig.strategyMode === 'STATIC') {
+        if (currentBets.length === 0) {
+            alert("Please place bets first for Static Mode!");
+            setSimStatus('IDLE');
+            return;
+        }
+    } 
+    
+    // --- MODE CHECK: ROTATING ---
+    let parsedRotation: BetPlacement[] = [];
+    if (strategyConfig.strategyMode === 'ROTATING') {
+        try {
+            parsedRotation = parseSequence(strategyConfig.sequence);
+            if (parsedRotation.length === 0) {
+                alert("Please enter a valid bet sequence for Rotating Mode (e.g., 'red, black')");
+                setSimStatus('IDLE');
+                return;
+            }
+        } catch (e: any) {
+            alert(e.message);
+            setSimStatus('IDLE');
+            return;
+        }
     }
 
     // Mark current run ID for AI Analysis validity
@@ -231,7 +262,15 @@ const App: React.FC = () => {
             }
 
             let currentBankroll = settings.startingBankroll; 
+            
+            // STATIC State
             let currentMultiplier = 1;
+            let progressionIndex = 0; // Track Fibonacci step
+            
+            // ROTATING State
+            let rotatingIndex = 0;
+            let rotatingUnits = 1;
+
             let sessionBaselineBankroll = currentBankroll; // For reset on profit logic
             
             let simHistory: SimulationStep[] = [];
@@ -258,56 +297,78 @@ const App: React.FC = () => {
                 if (strategyConfig.useResetOnSessionProfit && strategyConfig.resetOnSessionProfit > 0) {
                     const currentSessionProfit = currentBankroll - sessionBaselineBankroll;
                     if (currentSessionProfit >= strategyConfig.resetOnSessionProfit) {
+                        // Reset both modes
                         currentMultiplier = 1;
+                        progressionIndex = 0;
+                        rotatingUnits = 1; // Or minUnits? Assuming 1 for baseline reset.
+                        rotatingIndex = 0;
                         sessionBaselineBankroll = currentBankroll; 
                     }
                 }
 
-                // --- Calculate Effective Multiplier & Spin Bets ---
-                let effectiveMultiplier = currentMultiplier;
+                let spinBets: Bet[] = [];
+                let totalWager = 0;
 
-                // Use pre-calculated baseBetAmount
-                const totalBaseWager = baseBetAmount;
+                // --- BUILD BETS BASED ON MODE ---
+                if (strategyConfig.strategyMode === 'STATIC') {
+                    // STATIC LOGIC
+                    let effectiveMultiplier = currentMultiplier;
+                    const totalBaseWager = currentBets.reduce((sum, b) => sum + b.amount, 0);
 
-                // Safety: Avoid division by zero
-                if (totalBaseWager === 0) break; 
+                    if (totalBaseWager === 0) break; 
 
-                let projectedWager = totalBaseWager * effectiveMultiplier;
+                    let projectedWager = totalBaseWager * effectiveMultiplier;
 
-                // Cap by table max
-                if (projectedWager > settings.tableMax) {
-                    effectiveMultiplier = settings.tableMax / totalBaseWager;
-                    projectedWager = totalBaseWager * effectiveMultiplier;
+                    // Cap by table max
+                    if (projectedWager > settings.tableMax) {
+                        effectiveMultiplier = settings.tableMax / totalBaseWager;
+                        projectedWager = totalBaseWager * effectiveMultiplier;
+                    }
+                    // Cap by bankroll
+                    if (projectedWager > currentBankroll) {
+                        effectiveMultiplier = currentBankroll / totalBaseWager;
+                        projectedWager = totalBaseWager * effectiveMultiplier;
+                    }
+                    // Table Min
+                    if (projectedWager < settings.tableMin && currentBankroll >= settings.tableMin) {
+                        effectiveMultiplier = settings.tableMin / totalBaseWager;
+                        projectedWager = totalBaseWager * effectiveMultiplier;
+                    }
+                    // Min valid bet
+                    if (projectedWager < 1) break;
+
+                    spinBets = currentBets.map(b => ({
+                        ...b,
+                        amount: Math.max(1, Math.floor(b.amount * effectiveMultiplier)) 
+                    }));
+
+                    totalWager = spinBets.reduce((sum, b) => sum + b.amount, 0);
+
+                } else {
+                    // ROTATING LOGIC
+                    const currentPlacement = parsedRotation[rotatingIndex];
+                    
+                    let wagerAmount = Math.floor(rotatingUnits * strategyConfig.baseUnit);
+                    
+                    // Table Limits
+                    wagerAmount = Math.max(settings.tableMin, Math.min(settings.tableMax, wagerAmount));
+                    
+                    // Bankroll Limit
+                    wagerAmount = Math.min(currentBankroll, wagerAmount);
+
+                    if (wagerAmount < 1) break; // Cannot bet
+
+                    spinBets = [{
+                        id: `rot-${i}`,
+                        placement: currentPlacement,
+                        amount: wagerAmount
+                    }];
+                    
+                    totalWager = wagerAmount;
                 }
 
-                // Cap by bankroll (all-in)
-                if (projectedWager > currentBankroll) {
-                    effectiveMultiplier = currentBankroll / totalBaseWager;
-                    projectedWager = totalBaseWager * effectiveMultiplier;
-                }
-
-                // Enforce table minimum if affordable
-                if (projectedWager < settings.tableMin && currentBankroll >= settings.tableMin) {
-                    effectiveMultiplier = settings.tableMin / totalBaseWager;
-                    projectedWager = totalBaseWager * effectiveMultiplier;
-                }
-
-                // Final safety: if projected wager < 1, skip spin (can't bet less than 1 unit)
-                if (projectedWager < 1) break;
-
-                // Create actual bets for this spin
-                const spinBets = currentBets.map(b => ({
-                    ...b,
-                    amount: Math.max(1, Math.floor(b.amount * effectiveMultiplier)) // ensure at least 1 chip
-                }));
-
-                // Recompute total wager (for consistency)
-                const totalWager = spinBets.reduce((sum, b) => sum + b.amount, 0);
-
-                // If total wager somehow 0, break
-                if (totalWager <= 0) break;
-                // Safety: If forcing 1 chip per bet caused total to exceed bankroll, bust/break
-                if (totalWager > currentBankroll) break;
+                // --- EXECUTE SPIN ---
+                if (totalWager <= 0 || totalWager > currentBankroll) break;
 
                 const result = spinWheel();
                 const winnings = calculateWinnings(spinBets, result);
@@ -326,43 +387,95 @@ const App: React.FC = () => {
                 simHistory.push(newStep);
                 historyBuffer.push(newStep);
                 
-                // --- OPTIMIZED UI UPDATES ---
-                // Only update React state if:
-                // 1. It's not FAST mode (update every spin)
-                // 2. OR enough time has passed (throttling for FAST mode)
-                // 3. OR it's the very last spin of the simulation
+                // --- UPDATE UI (THROTTLED) ---
                 const now = Date.now();
                 const isFast = speedRef.current === 'FAST';
                 const shouldUpdate = !isFast || (now - lastUiUpdateTime > UI_UPDATE_INTERVAL_MS) || (i === spinsPerSim - 1);
 
                 if (shouldUpdate && isMountedRef.current) {
-                    // Flush buffer to state
                     const bufferedSteps = [...historyBuffer];
                     setHistory(prev => [...prev, ...bufferedSteps]); 
                     setBankroll(currentBankroll);
-                    
-                    historyBuffer = []; // Clear buffer
+                    historyBuffer = []; 
                     lastUiUpdateTime = now;
                 }
 
-                // Strategy Logic for Next Spin
+                // --- PROGRESSION LOGIC BASED ON MODE ---
                 if (profit > 0) {
-                  // Win
-                  switch (strategyConfig.onWinAction) {
-                    case ProgressionAction.RESET: currentMultiplier = 1; break;
-                    case ProgressionAction.MULTIPLY: currentMultiplier *= strategyConfig.onWinValue; break;
-                    case ProgressionAction.ADD_UNITS: currentMultiplier += strategyConfig.onWinValue; break;
-                    case ProgressionAction.SUBTRACT_UNITS: currentMultiplier = Math.max(1, currentMultiplier - strategyConfig.onWinValue); break;
-                    case ProgressionAction.DO_NOTHING: break;
+                  // WIN
+                  if (strategyConfig.strategyMode === 'STATIC') {
+                      switch (strategyConfig.onWinAction) {
+                        case ProgressionAction.RESET: 
+                            currentMultiplier = 1; 
+                            progressionIndex = 0;
+                            break;
+                        case ProgressionAction.MULTIPLY: 
+                            currentMultiplier *= strategyConfig.onWinValue; 
+                            break;
+                        case ProgressionAction.ADD_UNITS: 
+                            currentMultiplier += strategyConfig.onWinValue; 
+                            break;
+                        case ProgressionAction.SUBTRACT_UNITS: 
+                            currentMultiplier = Math.max(1, currentMultiplier - strategyConfig.onWinValue); 
+                            break;
+                        case ProgressionAction.FIBONACCI: {
+                            const steps = strategyConfig.onWinValue || 2; 
+                            progressionIndex = Math.max(0, progressionIndex - steps);
+                            currentMultiplier = FIB_SEQUENCE[progressionIndex];
+                            break;
+                        }
+                        case ProgressionAction.DO_NOTHING: 
+                            break;
+                      }
+                      currentMultiplier = Math.max(1, Math.floor(currentMultiplier));
+                  } else {
+                      // ROTATING WIN
+                      rotatingUnits += strategyConfig.onWinUnits;
+                      // Clamp
+                      rotatingUnits = Math.max(strategyConfig.minUnits, rotatingUnits);
+                      
+                      // Rotate sequence if enabled
+                      if (strategyConfig.rotateOnWin) {
+                        rotatingIndex = (rotatingIndex + 1) % parsedRotation.length;
+                      }
                   }
                 } else {
-                  // Loss
-                  switch (strategyConfig.onLossAction) {
-                    case ProgressionAction.RESET: currentMultiplier = 1; break;
-                    case ProgressionAction.MULTIPLY: currentMultiplier *= strategyConfig.onLossValue; break;
-                    case ProgressionAction.ADD_UNITS: currentMultiplier += strategyConfig.onLossValue; break;
-                    case ProgressionAction.SUBTRACT_UNITS: currentMultiplier = Math.max(1, currentMultiplier - strategyConfig.onLossValue); break;
-                    case ProgressionAction.DO_NOTHING: break;
+                  // LOSS
+                  if (strategyConfig.strategyMode === 'STATIC') {
+                      switch (strategyConfig.onLossAction) {
+                        case ProgressionAction.RESET: 
+                            currentMultiplier = 1; 
+                            progressionIndex = 0;
+                            break;
+                        case ProgressionAction.MULTIPLY: 
+                            currentMultiplier *= strategyConfig.onLossValue; 
+                            break;
+                        case ProgressionAction.ADD_UNITS: 
+                            currentMultiplier += strategyConfig.onLossValue; 
+                            break;
+                        case ProgressionAction.SUBTRACT_UNITS: 
+                            currentMultiplier = Math.max(1, currentMultiplier - strategyConfig.onLossValue); 
+                            break;
+                        case ProgressionAction.FIBONACCI: {
+                            const steps = strategyConfig.onLossValue || 1; 
+                            progressionIndex = Math.min(FIB_SEQUENCE.length - 1, progressionIndex + steps);
+                            currentMultiplier = FIB_SEQUENCE[progressionIndex];
+                            break;
+                        }
+                        case ProgressionAction.DO_NOTHING: 
+                            break;
+                      }
+                      currentMultiplier = Math.max(1, Math.floor(currentMultiplier));
+                  } else {
+                      // ROTATING LOSS
+                      rotatingUnits += strategyConfig.onLossUnits;
+                      // Clamp
+                      rotatingUnits = Math.max(strategyConfig.minUnits, rotatingUnits);
+                      
+                      // Rotate sequence if enabled
+                      if (strategyConfig.rotateOnLoss) {
+                        rotatingIndex = (rotatingIndex + 1) % parsedRotation.length;
+                      }
                   }
                 }
             } // End Spin Loop
@@ -372,24 +485,17 @@ const App: React.FC = () => {
             
             if (currentBankroll > settings.startingBankroll) wins++;
             else if (currentBankroll < settings.startingBankroll) losses++;
-            // Break-even is neither win nor loss in this stat tracking
 
             lastSimHistory = simHistory;
             lastFinalBankroll = currentBankroll;
 
-            // Small delay between simulations if running batch interactively
-            // If FAST, no artificial delay between batch items
             if (s < numSims - 1 && speedRef.current !== 'FAST') {
                 await new Promise(r => setTimeout(r, 500));
             }
         } // End Sim Loop
 
-        // Final Synchronization: Ensure the UI matches the absolute end state
         if (isMountedRef.current) {
             setBankroll(lastFinalBankroll);
-            // In case any buffered steps were left (though should be flushed by last spin check, safe to ensure)
-            // Ideally setHistory should be exactly lastSimHistory at end of single run.
-            // For batch, we probably want to see the last one.
             setHistory(lastSimHistory);
         }
 
@@ -403,13 +509,18 @@ const App: React.FC = () => {
   };
 
   const handleStartSimulation = () => {
-    if (currentBets.length === 0) {
+    // Basic pre-checks
+    if (strategyConfig.strategyMode === 'STATIC' && currentBets.length === 0) {
         alert("Place bets first!");
         return;
     }
+    
     setSimStatus('RUNNING');
     setBatchStats(null);
     setAiAnalysis('');
+    
+    // Auto maximize the graph view on start
+    setIsGraphFullScreen(true);
     
     // Abort previous
     if (abortControllerRef.current) {
@@ -568,21 +679,37 @@ const App: React.FC = () => {
                     triggerMode={false}
                 />
             </div>
+            
+            {/* Chip Selector */}
+            <div className="flex justify-center">
+                 <ChipSelector 
+                    selectedChip={selectedChip} 
+                    onSelectChip={setSelectedChip} 
+                />
+            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-4">
-                    <h3 className="text-sm font-bold text-slate-400 uppercase">Chip Selection</h3>
-                    <ChipSelector 
-                        selectedChip={selectedChip} 
-                        onSelectChip={setSelectedChip} 
-                    />
+            {/* Data Visualization Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 h-[26rem]">
+                <div className="md:col-span-5 h-full">
+                    <SpinLog history={history} className="h-full" />
                 </div>
-                <div className="space-y-4 h-64">
-                    <h3 className="text-sm font-bold text-slate-400 uppercase">Live Graph</h3>
+                <div className="md:col-span-7 h-full">
                     <StatsChart 
                         data={history} 
                         initialBalance={settings.startingBankroll}
                         className="h-full"
+                        onRunSimulation={handleStartSimulation}
+                        simStatus={simStatus}
+                        onPause={handlePause}
+                        onResume={handleResume}
+                        onStop={handleStop}
+                        speed={speed}
+                        onSpeedChange={setSpeed}
+                        isFullScreen={isGraphFullScreen}
+                        onToggleFullScreen={() => setIsGraphFullScreen(!isGraphFullScreen)}
+                        settings={settings}
+                        onUpdateSettings={setSettings}
+                        strategyConfig={strategyConfig}
                     />
                 </div>
             </div>

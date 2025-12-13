@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ProgressionConfig, ProgressionAction, SimulationSettings, SimulationSpeed, SimulationStatus } from '../types';
+import { ProgressionConfig, ProgressionAction, SimulationSettings, SimulationSpeed, SimulationStatus, StrategyMode } from '../types';
 import { generateStrategyFromDescription } from '../services/geminiService';
-import { Brain, Loader2, Settings, PlayCircle, Target, ShieldAlert, Save, FolderOpen, Plus, Trash2, Zap, Clock, MousePointerClick, Pause, Square, SkipForward, Play, ChevronDown, Pencil } from 'lucide-react';
+import { Brain, Loader2, Settings, PlayCircle, Target, ShieldAlert, Save, FolderOpen, Plus, Trash2, Zap, Clock, MousePointerClick, Pause, Square, SkipForward, Play, ChevronDown, Pencil, RotateCw } from 'lucide-react';
 
 interface StrategyPanelProps {
   config: ProgressionConfig;
@@ -111,6 +111,14 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
   const handleLoadStrategy = (strategy: SavedStrategy) => {
     setConfig({
         ...strategy.config,
+        // Ensure backward compatibility
+        strategyMode: strategy.config.strategyMode || 'STATIC',
+        sequence: strategy.config.sequence || "red, black",
+        onWinUnits: strategy.config.onWinUnits ?? -1,
+        onLossUnits: strategy.config.onLossUnits ?? 1,
+        minUnits: strategy.config.minUnits ?? 1,
+        rotateOnWin: strategy.config.rotateOnWin ?? true,
+        rotateOnLoss: strategy.config.rotateOnLoss ?? true,
         useTotalProfitGoal: strategy.config.useTotalProfitGoal ?? false,
         useResetOnSessionProfit: strategy.config.useResetOnSessionProfit ?? false
     });
@@ -128,6 +136,7 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
   const handleNewStrategy = () => {
     if (window.confirm("Start new strategy? Unsaved changes will be lost.")) {
       setConfig({
+        strategyMode: 'STATIC',
         onWinAction: ProgressionAction.RESET,
         onWinValue: 0,
         onLossAction: ProgressionAction.MULTIPLY,
@@ -138,9 +147,29 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
         resetOnSessionProfit: 150,
         useResetOnSessionProfit: false,
         baseUnit: 5,
+        sequence: "red, black",
+        onWinUnits: -1,
+        onLossUnits: 1,
+        minUnits: 1,
+        rotateOnWin: true,
+        rotateOnLoss: true
       });
       setStrategyName("New Strategy");
     }
+  };
+
+  const handleChangeAction = (type: 'win' | 'loss', value: string) => {
+      const action = value as ProgressionAction;
+      if (type === 'win') {
+          let newVal = config.onWinValue;
+          // Set sensible defaults when switching
+          if (action === ProgressionAction.FIBONACCI && newVal === 0) newVal = 2; // Default step back
+          setConfig({ ...config, onWinAction: action, onWinValue: newVal });
+      } else {
+          let newVal = config.onLossValue;
+          if (action === ProgressionAction.FIBONACCI && newVal === 0) newVal = 1; // Default step forward
+          setConfig({ ...config, onLossAction: action, onLossValue: newVal });
+      }
   };
 
   return (
@@ -188,46 +217,46 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
 
       {/* 2. Progression Strategy */}
       <div className="space-y-4">
-        {/* Strategy Toolbar */}
-        <div className="flex flex-col gap-2 border-b border-slate-700 pb-4">
-            <div className="flex items-center gap-2 text-slate-400 mb-1">
-                <Brain size={16} />
+        {/* Strategy Toolbar - CENTERED HEADER */}
+        <div className="flex flex-col gap-4 border-b border-slate-700 pb-6">
+            <div className="flex items-center justify-center gap-2 text-indigo-300">
+                <Brain size={18} />
                 <span className="text-xs font-bold uppercase tracking-wider">Strategy Logic</span>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-3">
+            <div className="flex flex-col xl:flex-row items-center justify-center gap-3">
                 {/* Editable Name Input */}
-                <div className="relative flex-1 group">
+                <div className="relative w-full xl:w-auto flex-1 max-w-md group order-2 xl:order-1">
                     <input 
                         type="text"
                         value={strategyName}
                         onChange={(e) => setStrategyName(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-600 focus:border-indigo-500 rounded px-3 py-2 font-bold text-white outline-none transition-colors"
+                        className="w-full bg-slate-900 border border-slate-600 focus:border-indigo-500 rounded-lg px-4 py-2 font-bold text-lg text-white text-center outline-none transition-colors shadow-sm focus:shadow-indigo-500/20"
                         placeholder="Strategy Name"
                         disabled={simStatus !== 'IDLE'}
                     />
-                    <Pencil size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none group-hover:text-slate-300 transition-colors" />
+                    <Pencil size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none group-hover:text-slate-300 transition-colors opacity-0 group-hover:opacity-100" />
                 </div>
 
                 {/* Toolbar Buttons */}
-                <div className="flex gap-2 shrink-0">
+                <div className="flex gap-2 shrink-0 order-1 xl:order-2">
                     <button 
                         onClick={handleNewStrategy} 
-                        className="flex items-center gap-1.5 px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium rounded transition-colors disabled:opacity-50"
+                        className="p-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50"
                         title="New Strategy"
                         disabled={simStatus !== 'IDLE'}
                     >
-                        <Plus size={16} /> <span className="hidden lg:inline">New</span>
+                        <Plus size={18} />
                     </button>
 
                     <div className="relative" ref={loadMenuRef}>
                         <button 
                             onClick={() => setShowLoadMenu(!showLoadMenu)} 
-                            className={`flex items-center gap-1.5 px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium rounded transition-colors disabled:opacity-50 ${showLoadMenu ? 'bg-slate-600' : ''}`}
+                            className={`flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 ${showLoadMenu ? 'bg-slate-600 ring-2 ring-slate-500' : ''}`}
                             title="Load Strategy"
                             disabled={simStatus !== 'IDLE'}
                         >
-                            <FolderOpen size={16} /> <span className="hidden lg:inline">Load</span> <ChevronDown size={14} />
+                            <FolderOpen size={18} /> <span className="hidden sm:inline">Load</span>
                         </button>
 
                         {/* Load Dropdown */}
@@ -262,11 +291,11 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
 
                     <button 
                         onClick={handleSaveStrategy} 
-                        className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded transition-colors disabled:opacity-50 shadow-lg shadow-indigo-500/20"
+                        className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/40"
                         title="Save Strategy"
                         disabled={simStatus !== 'IDLE'}
                     >
-                        <Save size={16} /> <span className="hidden lg:inline">Save</span>
+                        <Save size={18} /> <span className="hidden sm:inline">Save</span>
                     </button>
                 </div>
             </div>
@@ -277,7 +306,7 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
           <div className="flex gap-2">
             <input 
               type="text" 
-              placeholder='AI Helper: e.g. "Martingale: double on loss"' 
+              placeholder='AI Helper: e.g. "Fibonacci on loss, step back 2 on win"' 
               className="flex-1 bg-slate-900 border border-slate-600 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-50"
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}
@@ -293,61 +322,183 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* On Win */}
-          <div className="space-y-2">
-            <label className="block text-xs font-bold text-green-400 uppercase">On Win</label>
-            <select 
-              value={config.onWinAction}
-              onChange={(e) => setConfig({ ...config, onWinAction: e.target.value as ProgressionAction })}
-              disabled={simStatus !== 'IDLE'}
-              className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+        {/* MODE TOGGLE */}
+        <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-700">
+            <button
+                onClick={() => setConfig({ ...config, strategyMode: 'STATIC' })}
+                disabled={simStatus !== 'IDLE'}
+                className={`flex-1 py-2 text-xs font-bold rounded transition-all disabled:opacity-70 ${config.strategyMode === 'STATIC' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-300'}`}
             >
-              <option value={ProgressionAction.RESET}>Reset to Base</option>
-              <option value={ProgressionAction.MULTIPLY}>Multiply Bet</option>
-              <option value={ProgressionAction.ADD_UNITS}>Add Units</option>
-              <option value={ProgressionAction.DO_NOTHING}>Same Bet</option>
-            </select>
-            
-            {(config.onWinAction === ProgressionAction.MULTIPLY || config.onWinAction === ProgressionAction.ADD_UNITS) && (
-               <input 
-                 type="number" 
-                 placeholder="Value"
-                 value={config.onWinValue}
-                 onChange={(e) => setConfig({ ...config, onWinValue: parseFloat(e.target.value) })}
-                 disabled={simStatus !== 'IDLE'}
-                 className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
-               />
-            )}
-          </div>
-
-          {/* On Loss */}
-          <div className="space-y-2">
-            <label className="block text-xs font-bold text-red-400 uppercase">On Loss</label>
-            <select 
-              value={config.onLossAction}
-              onChange={(e) => setConfig({ ...config, onLossAction: e.target.value as ProgressionAction })}
-              disabled={simStatus !== 'IDLE'}
-              className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                STATIC BETS
+            </button>
+            <button
+                onClick={() => setConfig({ ...config, strategyMode: 'ROTATING' })}
+                disabled={simStatus !== 'IDLE'}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-bold rounded transition-all disabled:opacity-70 ${config.strategyMode === 'ROTATING' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-300'}`}
             >
-              <option value={ProgressionAction.RESET}>Reset to Base</option>
-              <option value={ProgressionAction.MULTIPLY}>Multiply Bet</option>
-              <option value={ProgressionAction.ADD_UNITS}>Add Units</option>
-              <option value={ProgressionAction.DO_NOTHING}>Same Bet</option>
-            </select>
-
-             {(config.onLossAction === ProgressionAction.MULTIPLY || config.onLossAction === ProgressionAction.ADD_UNITS) && (
-               <input 
-                  type="number" 
-                  placeholder="Value"
-                  value={config.onLossValue}
-                  onChange={(e) => setConfig({ ...config, onLossValue: parseFloat(e.target.value) })}
-                  disabled={simStatus !== 'IDLE'}
-                  className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
-               />
-            )}
-          </div>
+                <RotateCw size={12} />
+                ROTATING
+            </button>
         </div>
+
+        {/* STATIC MODE SETTINGS */}
+        {config.strategyMode === 'STATIC' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in zoom-in-95">
+            {/* On Win */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-green-400 uppercase">On Win</label>
+              <select 
+                value={config.onWinAction}
+                onChange={(e) => handleChangeAction('win', e.target.value)}
+                disabled={simStatus !== 'IDLE'}
+                className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                <option value={ProgressionAction.RESET}>Reset to Base</option>
+                <option value={ProgressionAction.MULTIPLY}>Multiply Bet</option>
+                <option value={ProgressionAction.ADD_UNITS}>Add Units</option>
+                <option value={ProgressionAction.SUBTRACT_UNITS}>Subtract Units</option>
+                <option value={ProgressionAction.FIBONACCI}>Fibonacci (Step Back)</option>
+                <option value={ProgressionAction.DO_NOTHING}>Same Bet</option>
+              </select>
+              
+              {config.onWinAction !== ProgressionAction.RESET && config.onWinAction !== ProgressionAction.DO_NOTHING && (
+                 <div className="relative">
+                    <input 
+                      type="number" 
+                      placeholder="Value"
+                      value={config.onWinValue}
+                      onChange={(e) => setConfig({ ...config, onWinValue: parseFloat(e.target.value) })}
+                      disabled={simStatus !== 'IDLE'}
+                      className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                    />
+                    {config.onWinAction === ProgressionAction.FIBONACCI && (
+                       <span className="absolute right-3 top-2 text-xs text-slate-500 pointer-events-none">Steps Back</span>
+                    )}
+                 </div>
+              )}
+            </div>
+
+            {/* On Loss */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-red-400 uppercase">On Loss</label>
+              <select 
+                value={config.onLossAction}
+                onChange={(e) => handleChangeAction('loss', e.target.value)}
+                disabled={simStatus !== 'IDLE'}
+                className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                <option value={ProgressionAction.RESET}>Reset to Base</option>
+                <option value={ProgressionAction.MULTIPLY}>Multiply Bet</option>
+                <option value={ProgressionAction.ADD_UNITS}>Add Units</option>
+                <option value={ProgressionAction.SUBTRACT_UNITS}>Subtract Units</option>
+                <option value={ProgressionAction.FIBONACCI}>Fibonacci Sequence</option>
+                <option value={ProgressionAction.DO_NOTHING}>Same Bet</option>
+              </select>
+
+               {config.onLossAction !== ProgressionAction.RESET && config.onLossAction !== ProgressionAction.DO_NOTHING && (
+                 <div className="relative">
+                   <input 
+                      type="number" 
+                      placeholder="Value"
+                      value={config.onLossValue}
+                      onChange={(e) => setConfig({ ...config, onLossValue: parseFloat(e.target.value) })}
+                      disabled={simStatus !== 'IDLE'}
+                      className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                   />
+                    {config.onLossAction === ProgressionAction.FIBONACCI && (
+                       <span className="absolute right-3 top-2 text-xs text-slate-500 pointer-events-none">Steps Fwd</span>
+                    )}
+                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ROTATING MODE SETTINGS */}
+        {config.strategyMode === 'ROTATING' && (
+          <div className="space-y-4 animate-in fade-in zoom-in-95">
+             <div className="space-y-2">
+                <label className="block text-xs font-bold text-indigo-400 uppercase">Bet Sequence</label>
+                <textarea 
+                    value={config.sequence}
+                    onChange={(e) => setConfig({ ...config, sequence: e.target.value })}
+                    disabled={simStatus !== 'IDLE'}
+                    placeholder="e.g. red, black, even, odd, 1-18"
+                    className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50 min-h-[60px]"
+                />
+                <p className="text-[10px] text-slate-500">Allowed: red, black, even, odd, 1-18, 19-36</p>
+             </div>
+             
+             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                 <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase">Base Unit ($)</label>
+                    <input 
+                      type="number" 
+                      value={config.baseUnit}
+                      onChange={(e) => setConfig({ ...config, baseUnit: Number(e.target.value) })}
+                      disabled={simStatus !== 'IDLE'}
+                      className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                    />
+                 </div>
+                 <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-green-400 uppercase">On Win (Units)</label>
+                    <input 
+                      type="number" 
+                      value={config.onWinUnits}
+                      onChange={(e) => setConfig({ ...config, onWinUnits: Number(e.target.value) })}
+                      disabled={simStatus !== 'IDLE'}
+                      className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                    />
+                 </div>
+                 <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-red-400 uppercase">On Loss (Units)</label>
+                    <input 
+                      type="number" 
+                      value={config.onLossUnits}
+                      onChange={(e) => setConfig({ ...config, onLossUnits: Number(e.target.value) })}
+                      disabled={simStatus !== 'IDLE'}
+                      className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                    />
+                 </div>
+                 <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase">Min Units</label>
+                    <input 
+                      type="number" 
+                      value={config.minUnits}
+                      min="1"
+                      onChange={(e) => setConfig({ ...config, minUnits: Number(e.target.value) })}
+                      disabled={simStatus !== 'IDLE'}
+                      className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                    />
+                 </div>
+             </div>
+
+             <div className="flex gap-6 pt-2">
+                <div className="flex items-center gap-2">
+                    <input 
+                        id="cbRotateWin"
+                        type="checkbox"
+                        checked={config.rotateOnWin}
+                        onChange={(e) => setConfig({ ...config, rotateOnWin: e.target.checked })}
+                        disabled={simStatus !== 'IDLE'}
+                        className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <label htmlFor="cbRotateWin" className="text-xs font-semibold text-slate-300 cursor-pointer select-none">Rotate on Win</label>
+                </div>
+                <div className="flex items-center gap-2">
+                    <input 
+                        id="cbRotateLoss"
+                        type="checkbox"
+                        checked={config.rotateOnLoss}
+                        onChange={(e) => setConfig({ ...config, rotateOnLoss: e.target.checked })}
+                        disabled={simStatus !== 'IDLE'}
+                        className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <label htmlFor="cbRotateLoss" className="text-xs font-semibold text-slate-300 cursor-pointer select-none">Rotate on Loss</label>
+                </div>
+             </div>
+          </div>
+        )}
         
         {/* Goals & Limits */}
         <div className="border-t border-slate-700 pt-4 space-y-4">
@@ -413,7 +564,7 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({
                     value={config.stopLoss}
                     onChange={(e) => setConfig({ ...config, stopLoss: Number(e.target.value) })}
                     disabled={simStatus !== 'IDLE'}
-                    className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
+                    className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white disabled:opacity-50"
                   />
               </div>
            </div>

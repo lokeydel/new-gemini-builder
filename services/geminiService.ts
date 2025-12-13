@@ -27,6 +27,7 @@ export const generateStrategyFromDescription = async (description: string): Prom
     - ADD_UNITS: Add X base units to current bet.
     - SUBTRACT_UNITS: Subtract X base units from current bet (min 1 unit).
     - DO_NOTHING: Keep bet same.
+    - FIBONACCI: Use Fibonacci sequence. Value determines steps (e.g. on loss move 1 step forward, on win move 2 steps back).
     
     New Logic Fields:
     - resetOnSessionProfit: Amount of profit in a mini-sequence that triggers a reset of the bet size (e.g. "Reset after winning $150").

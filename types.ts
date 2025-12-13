@@ -53,20 +53,35 @@ export enum ProgressionAction {
   MULTIPLY = 'MULTIPLY',
   ADD_UNITS = 'ADD_UNITS',
   SUBTRACT_UNITS = 'SUBTRACT_UNITS',
-  DO_NOTHING = 'DO_NOTHING'
+  DO_NOTHING = 'DO_NOTHING',
+  FIBONACCI = 'FIBONACCI'
 }
 
+export type StrategyMode = 'STATIC' | 'ROTATING';
+
 export interface ProgressionConfig {
+  // Common
+  strategyMode: StrategyMode;
+  baseUnit: number;
+  stopLoss: number; // The max amount you are willing to lose before quitting
+  totalProfitGoal: number; // The target amount to walk away with (e.g., $1000)
+  useTotalProfitGoal: boolean; // Checkbox to enable/disable profit goal
+  
+  // Static Mode
   onWinAction: ProgressionAction;
   onWinValue: number; // e.g., multiplier 2, or add 1 unit
   onLossAction: ProgressionAction;
   onLossValue: number;
-  stopLoss: number; // The max amount you are willing to lose before quitting
-  totalProfitGoal: number; // The target amount to walk away with (e.g., $1000)
-  useTotalProfitGoal: boolean; // Checkbox to enable/disable profit goal
   resetOnSessionProfit: number; // Logic: if session profit > 150, reset progression
   useResetOnSessionProfit: boolean; // Checkbox to enable/disable session reset
-  baseUnit: number;
+  
+  // Rotating Mode
+  sequence: string; // e.g. "red, black, even"
+  onWinUnits: number; // e.g. -1 (subtract 1 unit)
+  onLossUnits: number; // e.g. +1 (add 1 unit)
+  minUnits: number; // e.g. 1
+  rotateOnWin: boolean;
+  rotateOnLoss: boolean;
 }
 
 export interface SimulationSettings {
