@@ -125,8 +125,8 @@ const LogicFlowModal: React.FC<LogicFlowModalProps> = ({ isOpen, onClose, lane }
                     <div className="grid grid-cols-2 gap-2 text-[10px]">
                         <div className="bg-slate-900/50 p-2 rounded text-center border border-slate-700">
                              <span className="block text-slate-500 font-bold uppercase mb-1">Calculation</span>
-                             <div className="text-slate-300">Winnings = Stake + (Stake × Odds)</div>
-                             <div className="text-slate-300">Profit = Winnings - Stake</div>
+                             <div className="text-slate-300">Payout = Stake + (Stake × Odds)</div>
+                             <div className="text-slate-300">Profit = Payout - Stake</div>
                         </div>
                         <div className="bg-slate-900/50 p-2 rounded text-center border border-slate-700">
                              <span className="block text-slate-500 font-bold uppercase mb-1">Logic</span>

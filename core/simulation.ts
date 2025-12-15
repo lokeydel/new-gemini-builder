@@ -22,8 +22,8 @@ export function resolveSpin(
     let totalPayout = 0;
     const evaluatedBets: EvaluatedBet[] = [];
     
-    // Internal representation of numbers for checking
-    const resultNum = result.number === '00' ? -1 : Number(result.number);
+    // Internal representation of numbers for checking (Normalized Value)
+    const resultNum = result.value;
 
     // 1. Calculate Total Wager & Validate Affordability
     for (const bet of bets) {
@@ -49,17 +49,16 @@ export function resolveSpin(
         let returnAmount = 0;
 
         if (isWin) {
-             // Get standard odds (e.g., 35 for Straight Up)
+             // Get standard odds
              let odds = PAYOUTS[bet.placement.type];
              
-             // Fallback for custom placements
+             // Fallback/Calculation for custom placements
              if (odds === undefined) {
                  const count = Math.max(1, bet.placement.numbers.length);
                  odds = (36 / count) - 1;
              }
 
-             // CASINO MATH: Return = Stake + (Stake * Odds)
-             // Example: $10 on Red (1:1). Return = $10 + $10 = $20.
+             // CASINO MATH: Return/Payout = Stake + (Stake * Odds)
              returnAmount = bet.amount + (bet.amount * odds);
         }
 
@@ -70,13 +69,13 @@ export function resolveSpin(
             laneName: '', // Filled by wrapper
             placement: bet.placement,
             amount: bet.amount,
-            winnings: returnAmount,
+            payout: returnAmount, // Correct field name matching interface
             netProfit: returnAmount - bet.amount
         });
     }
 
     // 3. Final Reconciliation
-    // Net Profit = All Money Returned - All Money Bet
+    // Net Profit = All Money Returned (Payout) - All Money Bet
     const netProfit = totalPayout - totalWager;
     const finalBalance = startingBalance + netProfit;
 
@@ -171,7 +170,8 @@ export function prepareLaneForSpin(
         
         for (let k = history.length - 1; k >= 0; k--) {
             const step = history[k];
-            const stepNum = step.result.number === '00' ? -1 : Number(step.result.number);
+            // Use normalized value
+            const stepNum = step.result.value;
             const matchesTarget = tb.triggerPlacement.numbers.includes(stepNum);
             
             if (tb.rule === 'MISS_STREAK') {
@@ -216,7 +216,7 @@ export function updateLaneAfterSpin(
 ): {
     profit: number;
     wager: number;
-    winnings: number;
+    totalPayout: number; // Renamed from winnings
     updatedLaneState: RuntimeLane;
     wasReset: boolean;
     evaluatedBets: EvaluatedBet[];
@@ -225,9 +225,6 @@ export function updateLaneAfterSpin(
     let wasReset = false;
 
     // DELEGATE TO CANONICAL RESOLVER
-    // We treat this lane's bets as a mini-session to get the P/L
-    // Note: We pass a dummy balance because the global check happens in App.tsx. 
-    // Here we just want the P/L numbers.
     const resolution = resolveSpin(Number.MAX_SAFE_INTEGER, bets, result);
 
     // Decorate evaluated bets with lane info
@@ -287,7 +284,7 @@ export function updateLaneAfterSpin(
     return {
         profit: resolution.netProfit,
         wager: resolution.totalWager,
-        winnings: resolution.totalPayout,
+        totalPayout: resolution.totalPayout, // Renamed
         updatedLaneState: nextLane,
         wasReset,
         evaluatedBets: decoratedBets

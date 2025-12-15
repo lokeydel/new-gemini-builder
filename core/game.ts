@@ -1,31 +1,31 @@
 
 // CORE — DO NOT MODIFY WITHOUT INTENT
 import { PlacedBet, SpinResult, BetType, BetPlacement } from './types';
-import { RED_NUMBERS } from './constants';
+import { RED_NUMBERS, BLACK_NUMBERS } from './constants';
 
 export const spinWheel = (): SpinResult => {
   // American Roulette: 1-36, 0, 00 (38 pockets)
   const pocketIndex = Math.floor(Math.random() * 38);
   
-  let number: number;
+  let value: number;
   let display: string;
   let color: 'red' | 'black' | 'green';
 
   if (pocketIndex === 37) {
-    number = -1; // 00
+    value = -1; // 00
     display = '00';
     color = 'green';
   } else if (pocketIndex === 0) {
-    number = 0;
+    value = 0;
     display = '0';
     color = 'green';
   } else {
-    number = pocketIndex;
-    display = number.toString();
-    color = RED_NUMBERS.includes(number) ? 'red' : 'black';
+    value = pocketIndex;
+    display = value.toString();
+    color = RED_NUMBERS.includes(value) ? 'red' : 'black';
   }
 
-  return { number: display, color };
+  return { value, display, color };
 };
 
 export const getSpinResult = (val: string | number): SpinResult => {
@@ -33,18 +33,21 @@ export const getSpinResult = (val: string | number): SpinResult => {
   const num = display === '00' ? -1 : Number(display);
   
   let color: 'red' | 'black' | 'green';
+  let value: number;
   
   if (num === -1 || num === 0) {
     color = 'green';
+    value = num;
   } else {
     if (isNaN(num)) {
       console.warn("Invalid spin input:", val);
-      return { number: '0', color: 'green' };
+      return { value: 0, display: '0', color: 'green' };
     }
+    value = num;
     color = RED_NUMBERS.includes(num) ? 'red' : 'black';
   }
   
-  return { number: display, color };
+  return { value, display, color };
 };
 
 export const parseSequence = (sequenceStr: string): BetPlacement[] => {
@@ -63,8 +66,8 @@ export const parseSequence = (sequenceStr: string): BetPlacement[] => {
         placement = { type: BetType.RED, numbers: [...RED_NUMBERS], displayName: 'Red' };
         break;
       case 'black':
-        const blackNumbers = allNumbers.filter(n => !RED_NUMBERS.includes(n));
-        placement = { type: BetType.BLACK, numbers: blackNumbers, displayName: 'Black' };
+        // Explicitly use BLACK_NUMBERS for correctness (excludes 0/00 implicitly by design)
+        placement = { type: BetType.BLACK, numbers: [...BLACK_NUMBERS], displayName: 'Black' };
         break;
       case 'even':
         placement = { type: BetType.EVEN, numbers: allNumbers.filter(n => n % 2 === 0), displayName: 'Even' };

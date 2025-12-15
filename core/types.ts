@@ -1,5 +1,4 @@
 
-
 // CORE — DO NOT MODIFY WITHOUT INTENT
 
 export enum BetType {
@@ -8,7 +7,8 @@ export enum BetType {
   STREET = 'STREET',
   CORNER = 'CORNER',
   SIX_LINE = 'SIX_LINE',
-  BASKET = 'BASKET', // Top line 0,00,1,2,3
+  TOP_LINE = 'TOP_LINE', // 0, 00, 1, 2, 3 (Pays 6:1)
+  BASKET = 'BASKET',     // 0, 1, 2 or 0, 00, 2 (Pays 11:1)
   COLUMN_1ST = 'COLUMN_1ST',
   COLUMN_2ND = 'COLUMN_2ND',
   COLUMN_3RD = 'COLUMN_3RD',
@@ -43,8 +43,8 @@ export interface EvaluatedBet {
   laneName: string; // Snapshot of lane name
   placement: BetPlacement;
   amount: number;
-  winnings: number; // Payout + Stake returned
-  netProfit: number; // Winnings - Amount
+  payout: number; // Total returned (Stake + Profit)
+  netProfit: number; // Payout - Amount
 }
 
 export interface SavedLayout {
@@ -54,7 +54,8 @@ export interface SavedLayout {
 }
 
 export interface SpinResult {
-  number: number | string; // '00' is a string
+  value: number;   // Normalized: -1 for 00, 0-36 for others
+  display: string; // "00", "0", "1", etc.
   color: 'red' | 'black' | 'green';
 }
 

@@ -7,6 +7,7 @@ export const NUMBERS = [
 ];
 
 export const RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
+export const BLACK_NUMBERS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35];
 
 export const FIB_SEQUENCE = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946, 17711];
 
@@ -20,7 +21,10 @@ export const OUTSIDE_BET_TYPES = new Set([
 
 export const getNumberColor = (num: number | string): 'red' | 'black' | 'green' => {
   if (num === '0' || num === '00' || num === 0 || num === -1) return 'green';
-  return RED_NUMBERS.includes(Number(num)) ? 'red' : 'black';
+  const n = Number(num);
+  if (RED_NUMBERS.includes(n)) return 'red';
+  if (BLACK_NUMBERS.includes(n)) return 'black';
+  return 'green'; // Fallback logic
 };
 
 export const CHIP_VALUES = [1, 5, 25, 100, 500, 1000];
@@ -41,7 +45,8 @@ export const PAYOUTS: Record<BetType, number> = {
   [BetType.STREET]: 11,
   [BetType.CORNER]: 8,
   [BetType.SIX_LINE]: 5,
-  [BetType.BASKET]: 6, // 0,00,1,2,3
+  [BetType.TOP_LINE]: 6, // 0, 00, 1, 2, 3
+  [BetType.BASKET]: 11,  // 0, 1, 2 OR 0, 00, 2 (Three numbers -> Street odds)
   [BetType.COLUMN_1ST]: 2,
   [BetType.COLUMN_2ND]: 2,
   [BetType.COLUMN_3RD]: 2,

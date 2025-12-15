@@ -52,8 +52,12 @@ const LANE_COLORS = [
 ];
 
 const BinaryBackground = () => (
-    <div className="absolute top-0 right-0 w-3/4 h-full overflow-hidden pointer-events-none z-0 opacity-30 select-none"
-         style={{ maskImage: 'linear-gradient(to right, transparent, black 80%)', WebkitMaskImage: 'linear-gradient(to right, transparent, black 80%)' }}>
+    <div className="absolute top-0 right-0 w-2/3 h-full overflow-hidden pointer-events-none z-0 opacity-40 select-none"
+         style={{ 
+             // Fade out on the left side before hitting the title
+             maskImage: 'linear-gradient(to right, transparent 0%, transparent 10%, black 60%)', 
+             WebkitMaskImage: 'linear-gradient(to right, transparent 0%, transparent 10%, black 60%)' 
+         }}>
         <style>{`
             @keyframes scrollLeft {
                 from { transform: translateX(0); }
@@ -61,21 +65,25 @@ const BinaryBackground = () => (
             }
             .binary-row {
                 white-space: nowrap;
-                font-family: monospace;
+                font-family: 'Courier New', monospace;
                 position: absolute;
                 right: 0;
                 animation: scrollLeft linear infinite;
+                line-height: 1;
             }
         `}</style>
-        {/* Rows of binary data */}
-        <div className="binary-row text-[10px] text-indigo-500/60 top-1" style={{ animationDuration: '30s' }}>
-            {Array(40).fill('0100101101010010101011101010101010010110101 ').join('')}
+        {/* 4 Lines of binary data running right to left */}
+        <div className="binary-row text-[10px] text-indigo-500/60 top-1" style={{ animationDuration: '60s' }}>
+            {Array(50).fill('01001011 01010010 10101110 10101010 10010110 ').join('')}
         </div>
-        <div className="binary-row text-[10px] text-emerald-500/50 top-4" style={{ animationDuration: '45s', animationDirection: 'reverse' }}>
-            {Array(40).fill('101100101011101001010101001011010101101001 ').join('')}
+        <div className="binary-row text-[10px] text-emerald-500/50 top-3.5" style={{ animationDuration: '75s' }}>
+            {Array(50).fill('10110010 10111010 01010101 00101101 01011010 ').join('')}
         </div>
-        <div className="binary-row text-[10px] text-cyan-500/50 top-7" style={{ animationDuration: '35s' }}>
-            {Array(40).fill('0010101011010101001010110101010100101010 ').join('')}
+        <div className="binary-row text-[10px] text-cyan-500/50 top-6" style={{ animationDuration: '65s' }}>
+            {Array(50).fill('00101010 11010101 00101011 01010101 00101010 ').join('')}
+        </div>
+        <div className="binary-row text-[10px] text-violet-500/50 top-8.5" style={{ animationDuration: '80s' }}>
+            {Array(50).fill('11100010 10110101 11010101 00101011 01010101 ').join('')}
         </div>
     </div>
 );
@@ -522,7 +530,7 @@ const App: React.FC = () => {
     let lastFinalBankroll = settings.startingBankroll;
     
     let lastUiUpdateTime = 0;
-    const UI_UPDATE_INTERVAL_MS = 50;
+    const UI_UPDATE_INTERVAL_MS = 16; // ~60fps target for live feeling
 
     try {
         for (let s = 0; s < numSims; s++) {
@@ -603,7 +611,7 @@ const App: React.FC = () => {
                      console.warn(`Bet ($${totalSpinWager}) exceeds bankroll ($${currentBankroll}). Stopping simulation.`);
                      simHistory.push({
                         spinIndex: i + 1,
-                        result: { number: 'X', color: 'green' },
+                        result: { value: 0, display: 'X', color: 'green' },
                         startingBankroll: currentBankroll,
                         betAmount: 0,
                         outcome: 0,
@@ -635,7 +643,7 @@ const App: React.FC = () => {
                 // Wait, we can't flatten because Lanes track state independently.
                 // We must process lanes individually using updateLaneAfterSpin (which uses resolveSpin internally now).
                 
-                let globalWinnings = 0;
+                let globalPayout = 0;
                 let globalWager = 0;
                 let netPL = 0;
 
@@ -644,7 +652,7 @@ const App: React.FC = () => {
                     if (!data) continue;
 
                     // Delegate to the STRICT Engine
-                    const { profit, wager, winnings, updatedLaneState, wasReset, evaluatedBets } = updateLaneAfterSpin(
+                    const { profit, wager, totalPayout, updatedLaneState, wasReset, evaluatedBets } = updateLaneAfterSpin(
                         rLane,
                         data.bets,
                         result,
@@ -654,7 +662,7 @@ const App: React.FC = () => {
                     );
 
                     Object.assign(rLane, updatedLaneState);
-                    globalWinnings += winnings;
+                    globalPayout += totalPayout;
                     globalWager += wager;
                     netPL += profit;
                     

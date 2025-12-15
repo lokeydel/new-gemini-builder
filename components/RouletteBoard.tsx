@@ -1,8 +1,9 @@
+
 // DO NOT WRITE OVER
 import React, { useMemo, useState, useCallback } from 'react';
 import { BetType, BetPlacement, Bet } from '../core/types';
 import { getPlacementIdentifier } from '../utils/placements';
-import { CHIP_COLORS } from '../core/constants';
+import { CHIP_COLORS, BLACK_NUMBERS } from '../core/constants';
 
 interface RouletteTableProps {
   onBetSelect: (betPlacement: BetPlacement) => void;
@@ -45,6 +46,7 @@ const OUTLINE_ELIGIBLE_TYPES = new Set<BetType>([
   BetType.CORNER,
   BetType.STREET,
   BetType.SIX_LINE,
+  BetType.TOP_LINE, // Added
   BetType.BASKET,
   BetType.DOZEN_1ST,
   BetType.DOZEN_2ND,
@@ -186,9 +188,9 @@ for (let i = 0; i < NUMBER_COLUMNS; i++) {
   }
 }
 
-// Top Line (Basket) Bet: 0, 00, 1, 2, 3
+// Top Line (5-number) Bet: 0, 00, 1, 2, 3
 BET_DEFINITIONS.push({
-  type: BetType.BASKET,
+  type: BetType.TOP_LINE, // Updated to new type
   numbers: [-1, 0, 1, 2, 3],
   displayName: 'Top Line (0,00,1,2,3)',
   chipPosition: { top: formatPercent(getRowBoundaryPercent(3)), left: formatPercent(getColumnBoundaryPercent(0)) },
@@ -213,7 +215,7 @@ const evenMoneyBetTop = formatPercent(getRowBoundaryPercent(3) + dozenRowHeightP
 BET_DEFINITIONS.push({ type: BetType.LOW_1_18, numbers: Array.from({ length: 18 }, (_, i) => i + 1), displayName: '1 to 18', chipPosition: { top: evenMoneyBetTop, left: formatPercent(getColumnBoundaryPercent(0) + numberColumnWidthPercent * 1) } });
 BET_DEFINITIONS.push({ type: BetType.EVEN, numbers: Array.from({ length: 18 }, (_, i) => (i + 1) * 2), displayName: 'Even', chipPosition: { top: evenMoneyBetTop, left: formatPercent(getColumnBoundaryPercent(2) + numberColumnWidthPercent * 1) } });
 BET_DEFINITIONS.push({ type: BetType.RED, numbers: Array.from(redNumbers), displayName: 'Red', chipPosition: { top: evenMoneyBetTop, left: formatPercent(getColumnBoundaryPercent(4) + numberColumnWidthPercent * 1) } });
-BET_DEFINITIONS.push({ type: BetType.BLACK, numbers: Array.from({ length: 36 }, (_, i) => i + 1).filter(n => !redNumbers.has(n)), displayName: 'Black', chipPosition: { top: evenMoneyBetTop, left: formatPercent(getColumnBoundaryPercent(6) + numberColumnWidthPercent * 1) } });
+BET_DEFINITIONS.push({ type: BetType.BLACK, numbers: Array.from(BLACK_NUMBERS), displayName: 'Black', chipPosition: { top: evenMoneyBetTop, left: formatPercent(getColumnBoundaryPercent(6) + numberColumnWidthPercent * 1) } });
 BET_DEFINITIONS.push({ type: BetType.ODD, numbers: Array.from({ length: 18 }, (_, i) => i * 2 + 1), displayName: 'Odd', chipPosition: { top: evenMoneyBetTop, left: formatPercent(getColumnBoundaryPercent(8) + numberColumnWidthPercent * 1) } });
 BET_DEFINITIONS.push({ type: BetType.HIGH_19_36, numbers: Array.from({ length: 18 }, (_, i) => i + 19), displayName: '19 to 36', chipPosition: { top: evenMoneyBetTop, left: formatPercent(getColumnBoundaryPercent(10) + numberColumnWidthPercent * 1) } });
 

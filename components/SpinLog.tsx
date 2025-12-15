@@ -58,7 +58,7 @@ const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, className }) => {
           
           return [
               step.spinIndex,
-              step.result.number,
+              step.result.display, // Use display string
               step.betAmount,
               step.outcome,
               startBal,
@@ -155,14 +155,13 @@ const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, className }) => {
                     </tr>
                 ) : (
                     displayHistory.map((step, idx) => {
-                        const color = getNumberColor(step.result.number);
+                        const color = getNumberColor(step.result.value); // Use value for color check
                         const numBg = color === 'red' ? 'bg-red-600' : color === 'black' ? 'bg-slate-800' : 'bg-green-600';
                         const plClass = step.outcome > 0 ? 'text-emerald-400' : step.outcome < 0 ? 'text-red-400' : 'text-slate-500';
                         const betsString = formatBets(step);
                         const isExpanded = expandedSpinIndex === step.spinIndex;
                         
                         // Check for gap (audit check)
-                        // Note: displayHistory is reversed, so "previous" spin chronologically is at index + 1
                         const prevStep = displayHistory[idx + 1];
                         const isContinuityBroken = prevStep && prevStep.bankroll !== step.startingBankroll;
 
@@ -180,7 +179,7 @@ const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, className }) => {
                                     {/* Result Number */}
                                     <td className="px-2 py-2 text-center">
                                         <div className={`inline-flex items-center justify-center w-6 h-6 rounded font-bold text-xs text-white shadow-sm ${numBg}`}>
-                                            {step.result.number}
+                                            {step.result.display}
                                         </div>
                                     </td>
 

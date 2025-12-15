@@ -135,10 +135,10 @@ const StatsChart: React.FC<StatsChartProps> = ({
   }, [data, initialBalance, activeLanes]);
 
   const range = maxVal - minVal;
-  // Dynamic Range Scaling: Minimal padding to ensure the graph touches (or nearly touches) the edges
-  // 1% padding prevents stroke clipping while keeping peaks at the top/bottom
-  const padding = range === 0 ? (initialBalance || 100) * 0.05 : range * 0.01;
+  // Use very tight padding (1% or 2%) to maximize dynamics - ensures graph zooms in on small ranges
+  const padding = range === 0 ? (initialBalance || 100) * 0.05 : range * 0.02;
   
+  // Disable animation during active simulation for instant updates
   const isAnimating = simStatus === 'RUNNING' || data.length > 100;
 
   // --- CUSTOM AXIS TICKS ---
@@ -196,20 +196,55 @@ const StatsChart: React.FC<StatsChartProps> = ({
       );
 
       return (
-        <div className={`w-full bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col ${className || 'h-72'} transition-all duration-300 relative`}>
-          <div className="flex items-center justify-between gap-4 mb-2 min-h-[30px] shrink-0">
-             <h3 className="font-semibold text-slate-300 text-sm">Progression Lines</h3>
-             <div className="flex items-center gap-2">
-                 {/* Mini Controls */}
-                 {simStatus === 'RUNNING' && onPause && <button onClick={onPause} className="p-1 text-amber-400 hover:bg-slate-700 rounded"><Pause size={14}/></button>}
-                 {simStatus === 'PAUSED' && onResume && <button onClick={onResume} className="p-1 text-green-400 hover:bg-slate-700 rounded"><Play size={14}/></button>}
-                 {simStatus !== 'IDLE' && onStop && <button onClick={onStop} className="p-1 text-red-400 hover:bg-slate-700 rounded"><Square size={14}/></button>}
-                 <button onClick={toggleFullScreen} className="p-1 text-slate-400 hover:text-white hover:bg-slate-700 rounded"><Maximize2 size={14} /></button>
+        <div className={`w-full bg-slate-800 rounded-xl border border-slate-700 flex flex-col ${className || 'h-72'} transition-all duration-300 relative overflow-hidden group`}>
+          
+          {/* Header Overlays */}
+          <div className="absolute top-0 left-0 right-0 p-3 flex items-start justify-between z-20 pointer-events-none">
+             
+             {/* Title with backdrop */}
+             <div className="bg-slate-900/40 backdrop-blur-sm px-2 py-1 rounded border border-slate-700/50 pointer-events-auto">
+                 <h3 className="font-semibold text-slate-300 text-xs uppercase tracking-wider">Progression Lines</h3>
+             </div>
+             
+             {/* Controls Group - Always Visible in Top Right */}
+             <div className="flex items-center gap-2 pointer-events-auto">
+                 {/* Run/Stop Button */}
+                 {onRunSimulation && (
+                     <button 
+                        onClick={(e) => { 
+                            e.stopPropagation(); 
+                            if(simStatus === 'RUNNING' && onStop) onStop(); 
+                            else if(simStatus === 'IDLE') onRunSimulation(); 
+                        }} 
+                        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded shadow-lg transition-all border backdrop-blur-sm ${
+                            simStatus === 'RUNNING' 
+                            ? 'bg-red-600/90 hover:bg-red-500 border-red-500 text-white' 
+                            : 'bg-emerald-600/90 hover:bg-emerald-500 border-emerald-500 text-white'
+                        }`}
+                     >
+                        {simStatus === 'RUNNING' ? <Square size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" />}
+                        {simStatus === 'RUNNING' ? 'STOP' : 'RUN'}
+                     </button>
+                 )}
+                 
+                 {/* Pause/Resume */}
+                 {simStatus === 'RUNNING' && onPause && (
+                     <button onClick={onPause} className="p-1.5 bg-slate-800/80 hover:bg-slate-700 text-amber-400 border border-slate-600 rounded backdrop-blur transition-colors"><Pause size={14}/></button>
+                 )}
+                 {simStatus === 'PAUSED' && onResume && (
+                     <button onClick={onResume} className="p-1.5 bg-slate-800/80 hover:bg-slate-700 text-green-400 border border-slate-600 rounded backdrop-blur transition-colors"><Play size={14}/></button>
+                 )}
+                 
+                 {/* Fullscreen */}
+                 <button onClick={toggleFullScreen} className="p-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-600 rounded backdrop-blur transition-colors">
+                    <Maximize2 size={14} />
+                 </button>
              </div>
           </div>
-          <div className="flex-1 min-h-0 relative w-full h-full">
+          
+          <div className="flex-1 w-full h-full pt-0">
             <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }} baseValue="dataMin">
                     <defs>
                         {activeLanes.map(lane => (
                             <linearGradient key={lane.id} id={`color-${lane.id}`} x1="0" y1="0" x2="0" y2="1">
@@ -223,7 +258,18 @@ const StatsChart: React.FC<StatsChartProps> = ({
                     <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc', borderRadius: '8px' }} />
                     <ReferenceLine y={initialBalance} stroke="#64748b" strokeDasharray="3 3" />
                     {activeLanes.map(lane => (
-                        <Area key={lane.id} type="monotone" dataKey={`laneBankrolls.${lane.id}`} stackId="1" stroke={lane.color} fill={`url(#color-${lane.id})`} fillOpacity={1} strokeWidth={1} isAnimationActive={!isAnimating} />
+                        <Area 
+                            key={lane.id} 
+                            type="monotone" 
+                            dataKey={`laneBankrolls.${lane.id}`} 
+                            stackId="1" 
+                            stroke={lane.color} 
+                            fill={`url(#color-${lane.id})`} 
+                            fillOpacity={1} 
+                            strokeWidth={1} 
+                            isAnimationActive={!isAnimating} 
+                            animationDuration={0}
+                        />
                     ))}
                     <Area 
                         type="monotone" 
@@ -233,6 +279,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                         strokeWidth={2} 
                         strokeDasharray="5 5" 
                         isAnimationActive={!isAnimating}
+                        animationDuration={0}
                         dot={renderResetDot}
                     />
                 </AreaChart>
@@ -378,7 +425,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
 
               <div className="flex-1 w-full min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData} margin={{ top: 20, right: 30, left: 10, bottom: 0 }}>
+                    <AreaChart data={chartData} margin={{ top: 20, right: 30, left: 10, bottom: 0 }} baseValue="dataMin">
                         <defs>
                             {/* Lane Gradients */}
                             {activeLanes.map(lane => (
@@ -425,6 +472,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                                 fill={`url(#fs-gradient-${lane.id})`}
                                 strokeWidth={1}
                                 isAnimationActive={!isAnimating}
+                                animationDuration={0}
                             />
                         ))}
 
@@ -437,6 +485,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                             strokeWidth={3}
                             fill="none" 
                             isAnimationActive={!isAnimating}
+                            animationDuration={0}
                             dot={renderResetDot}
                         />
                         
@@ -519,7 +568,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                      <tbody className="text-xs font-mono divide-y divide-slate-800">
                          {/* Render reversed copy so newest is top */}
                          {[...data].reverse().map(step => {
-                             const color = getNumberColor(step.result.number);
+                             const color = getNumberColor(step.result.value);
                              const bg = color === 'red' ? 'bg-red-600' : color === 'black' ? 'bg-slate-800' : 'bg-green-600';
                              const isWin = step.outcome > 0;
                              return (
@@ -527,7 +576,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                                      <td className="px-3 py-2 text-slate-500">{step.spinIndex}</td>
                                      <td className="px-3 py-2 text-center">
                                          <div className={`w-6 h-6 rounded flex items-center justify-center text-white font-bold mx-auto shadow-sm ${bg}`}>
-                                             {step.result.number}
+                                             {step.result.display}
                                          </div>
                                      </td>
                                      <td className="px-3 py-2 text-right text-slate-400">
