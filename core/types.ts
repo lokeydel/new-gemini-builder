@@ -1,4 +1,6 @@
 
+// CORE — DO NOT MODIFY WITHOUT INTENT
+
 export enum BetType {
   STRAIGHT_UP = 'STRAIGHT_UP',
   SPLIT = 'SPLIT',
@@ -52,9 +54,10 @@ export interface SimulationStep {
   betAmount: number;
   outcome: number; // Positive for win, negative for loss
   bankroll: number; // Global Total
-  laneDetails?: { laneId: string; profit: number }[]; 
+  laneDetails?: { laneId: string; profit: number; chainIndex?: number }[]; 
   laneBankrolls: Record<string, number>; // Individual running balance per lane
   activeTriggers?: string[]; // Debug info: which triggers fired this step
+  betDescriptions?: string[]; // Detailed text description of bets placed this spin
 }
 
 export enum ProgressionAction {
@@ -63,10 +66,14 @@ export enum ProgressionAction {
   ADD_UNITS = 'ADD_UNITS',
   SUBTRACT_UNITS = 'SUBTRACT_UNITS',
   DO_NOTHING = 'DO_NOTHING',
-  FIBONACCI = 'FIBONACCI'
+  FIBONACCI = 'FIBONACCI',
+  // Chain Actions
+  NEXT_CHAIN_STEP = 'NEXT_CHAIN_STEP',
+  PREV_CHAIN_STEP = 'PREV_CHAIN_STEP',
+  RESTART_CHAIN = 'RESTART_CHAIN'
 }
 
-export type StrategyMode = 'STATIC' | 'ROTATING';
+export type StrategyMode = 'STATIC' | 'ROTATING' | 'CHAIN';
 
 export interface ProgressionConfig {
   // Common
@@ -88,6 +95,12 @@ export interface ProgressionConfig {
   minUnits: number; // e.g. 1
   rotateOnWin: boolean;
   rotateOnLoss: boolean;
+  
+  // Chain Mode
+  chainSteps: SavedLayout[]; // The sequence of layouts to play
+  chainOnWin: ProgressionAction; // Usually RESTART_CHAIN or NEXT_CHAIN_STEP
+  chainOnLoss: ProgressionAction; // Usually NEXT_CHAIN_STEP
+  chainLoop: boolean; // If true, goes back to step 0 after last step. If false, stays on last step.
 }
 
 export interface SimulationSettings {
@@ -140,9 +153,19 @@ export interface Lane {
   enabled: boolean;
 }
 
+export interface RuntimeLane extends Lane {
+  multiplier: number;
+  progressionIndex: number;
+  rotatingIndex: number;
+  rotatingUnits: number;
+  sessionProfit: number;
+  chainIndex: number;
+}
+
 export interface SavedStrategy {
   id: string;
   name: string;
   lanes: Lane[]; // Saves the entire lane configuration
   settings: Partial<SimulationSettings>;
+  savedLayouts?: SavedLayout[]; // Stores the favorites library associated with this strategy
 }

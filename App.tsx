@@ -1,67 +1,150 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Bet, BetPlacement, ProgressionConfig, ProgressionAction, 
   SimulationSettings, SimulationStep, SimulationSpeed, SimulationStatus, 
-  BatchStats
-} from './types';
-import { spinWheel, calculateWinnings, parseSequence } from './services/rouletteLogic';
+  BatchStats, TriggerBet, SavedLayout, Lane, SavedStrategy, RuntimeLane
+} from './core/types';
+import { spinWheel, parseSequence } from './core/game';
+import { prepareLaneForSpin, updateLaneAfterSpin } from './core/simulation';
 import { analyzeSimulationResults, analyzeBatchResults } from './services/geminiService';
 import { getPlacementIdentifier } from './utils/placements';
 import RouletteTable from './components/RouletteBoard';
-import StrategyPanel from './components/StrategyPanel';
+import { StrategyPanel } from './components/StrategyPanel';
 import ChipSelector from './components/ChipSelector';
 import StatsChart from './components/StatsChart';
 import SpinLog from './components/SpinLog';
-import { RotateCcw, Trash2 } from 'lucide-react';
+import { RotateCcw, Trash2, Undo2, Save, Download, Plus, X, Settings, ArrowDownToLine, Eraser, Edit3, Link2 } from 'lucide-react';
 
-const FIB_SEQUENCE = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946, 17711];
-
-const App: React.FC = () => {
-  // --- State ---
-  const [bankroll, setBankroll] = useState(1000);
-  const [currentBets, setCurrentBets] = useState<Bet[]>([]);
-  const [history, setHistory] = useState<SimulationStep[]>([]);
-  const [selectedChip, setSelectedChip] = useState(5);
-  
-  // Strategy Config
-  const [strategyConfig, setStrategyConfig] = useState<ProgressionConfig>({
+// Default Config Helper
+const createDefaultConfig = (): ProgressionConfig => ({
     strategyMode: 'STATIC',
+    baseUnit: 5,
     onWinAction: ProgressionAction.RESET,
     onWinValue: 0,
     onLossAction: ProgressionAction.MULTIPLY,
     onLossValue: 2,
-    stopLoss: 500,
-    totalProfitGoal: 500,
-    useTotalProfitGoal: false,
     resetOnSessionProfit: 150,
     useResetOnSessionProfit: false,
-    baseUnit: 5,
     sequence: "red, black",
     onWinUnits: -1,
     onLossUnits: 1,
     minUnits: 1,
     rotateOnWin: true,
-    rotateOnLoss: true
-  });
+    rotateOnLoss: true,
+    // Chain Defaults
+    chainSteps: [],
+    chainOnWin: ProgressionAction.RESTART_CHAIN,
+    chainOnLoss: ProgressionAction.NEXT_CHAIN_STEP,
+    chainLoop: true
+});
 
-  // Simulation Settings
+// Vibrant colors for lanes
+const LANE_COLORS = [
+    '#6366f1', // Indigo
+    '#ec4899', // Pink
+    '#10b981', // Emerald
+    '#f59e0b', // Amber
+    '#0ea5e9', // Sky
+    '#8b5cf6', // Violet
+    '#f43f5e', // Rose
+    '#84cc16', // Lime
+];
+
+const BinaryBackground = () => (
+    <div className="absolute top-0 right-0 w-3/4 h-full overflow-hidden pointer-events-none z-0 opacity-30 select-none"
+         style={{ maskImage: 'linear-gradient(to right, transparent, black 80%)', WebkitMaskImage: 'linear-gradient(to right, transparent, black 80%)' }}>
+        <style>{`
+            @keyframes scrollLeft {
+                from { transform: translateX(0); }
+                to { transform: translateX(-50%); }
+            }
+            .binary-row {
+                white-space: nowrap;
+                font-family: monospace;
+                position: absolute;
+                right: 0;
+                animation: scrollLeft linear infinite;
+            }
+        `}</style>
+        {/* Rows of binary data */}
+        <div className="binary-row text-[10px] text-indigo-500/60 top-1" style={{ animationDuration: '30s' }}>
+            {Array(40).fill('0100101101010010101011101010101010010110101 ').join('')}
+        </div>
+        <div className="binary-row text-[10px] text-emerald-500/50 top-4" style={{ animationDuration: '45s', animationDirection: 'reverse' }}>
+            {Array(40).fill('101100101011101001010101001011010101101001 ').join('')}
+        </div>
+        <div className="binary-row text-[10px] text-cyan-500/50 top-7" style={{ animationDuration: '35s' }}>
+            {Array(40).fill('0010101011010101001010110101010100101010 ').join('')}
+        </div>
+    </div>
+);
+
+const App: React.FC = () => {
+  // --- Global Settings ---
   const [settings, setSettings] = useState<SimulationSettings>({
     startingBankroll: 1000,
     tableMin: 1,
     tableMax: 1000,
     spinsPerSimulation: 100,
     numberOfSimulations: 1,
+    stopLoss: 0, // Unused
+    totalProfitGoal: 500,
+    useTotalProfitGoal: false
   });
 
+  const [bankroll, setBankroll] = useState(1000);
+  
+  // --- Lane State ---
+  const [lanes, setLanes] = useState<Lane[]>([
+      {
+          id: 'lane-1',
+          name: 'Lane 1',
+          color: LANE_COLORS[0],
+          bets: [],
+          triggerBets: [],
+          config: createDefaultConfig(),
+          enabled: true
+      }
+  ]);
+  const [activeLaneId, setActiveLaneId] = useState<string>('lane-1');
+
+  // --- Strategy Management State ---
+  const [currentStrategyName, setCurrentStrategyName] = useState("My Strategy");
+  const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>(() => {
+    try {
+      const saved = localStorage.getItem('roulette_strategies');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('roulette_strategies', JSON.stringify(savedStrategies));
+  }, [savedStrategies]);
+
+  // --- Undo/History ---
+  const [undoStack, setUndoStack] = useState<Lane[][]>([]);
+
+  // --- Layouts (Just Bets) ---
+  const [savedLayouts, setSavedLayouts] = useState<SavedLayout[]>(() => {
+    try {
+      const saved = localStorage.getItem('roulette_layouts');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => { localStorage.setItem('roulette_layouts', JSON.stringify(savedLayouts)); }, [savedLayouts]);
+  
+  // --- Sim State ---
+  const [history, setHistory] = useState<SimulationStep[]>([]);
+  const [selectedChip, setSelectedChip] = useState(5);
   const [speed, setSpeed] = useState<SimulationSpeed>('FAST');
   const [simStatus, setSimStatus] = useState<SimulationStatus>('IDLE');
   const [batchStats, setBatchStats] = useState<BatchStats | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
-  
-  // UI State
   const [isGraphFullScreen, setIsGraphFullScreen] = useState(false);
 
-  // Refs for accessing latest state inside async loops
+  // Refs
   const simStatusRef = useRef<SimulationStatus>('IDLE');
   const speedRef = useRef<SimulationSpeed>('FAST');
   const pauseResolverRef = useRef<((value: void | PromiseLike<void>) => void) | null>(null);
@@ -70,137 +153,335 @@ const App: React.FC = () => {
   const isMountedRef = useRef(true);
   const analysisIdRef = useRef<number>(0);
 
-  // Sync refs with state
   useEffect(() => { simStatusRef.current = simStatus; }, [simStatus]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
-  useEffect(() => {
-      return () => { isMountedRef.current = false; };
-  }, []);
+  useEffect(() => { return () => { isMountedRef.current = false; }; }, []);
 
-  // --- Helpers ---
+  // --- Derived State Helpers ---
+  const getActiveLane = () => lanes.find(l => l.id === activeLaneId) || lanes[0];
+  
+  const updateActiveLane = (updater: (lane: Lane) => Lane) => {
+      setLanes(prev => {
+          if(simStatus === 'IDLE') setUndoStack(s => [...s, prev]);
+          return prev.map(l => l.id === activeLaneId ? updater(l) : l);
+      });
+  };
+
+  // --- Helper to get the correct bets for display (fixing the visual bug) ---
+  const getActiveChainIndex = (laneId: string) => {
+      // If idle, show step 0 (editing)
+      if (simStatus === 'IDLE' || history.length === 0) return 0;
+      
+      // If running/paused, show the 'next' step logic, which is stored in the last history update
+      const lastStep = history[history.length - 1];
+      const detail = lastStep.laneDetails?.find(d => d.laneId === laneId);
+      return detail?.chainIndex ?? 0;
+  };
+  
+  const activeChainIndex = getActiveChainIndex(activeLaneId);
+
+  // --- Strategy Persistence Functions ---
+  const handleSaveStrategy = () => {
+      // CODE NOTE: DONT CHANGE THE STRATEGY SAVE AND NEW SIMULATION SET UP. LEAVE IT AS IS.
+      
+      // 1. Prepare Configuration (for Local Storage - keeps list clean)
+      const strategyConfig: SavedStrategy = {
+          id: Date.now().toString(),
+          name: currentStrategyName,
+          lanes: lanes,
+          settings: settings,
+          savedLayouts: savedLayouts // Save the library of favorites
+      };
+
+      // 2. Prepare Full Export (for File Download - includes spin logs/history)
+      const fullExport = {
+          ...strategyConfig,
+          history: history,
+          exportedAt: new Date().toISOString(),
+          app: "ProRoulette Sim"
+      };
+
+      let proceed = true;
+      const existingIndex = savedStrategies.findIndex(s => s.name === currentStrategyName);
+      
+      if (existingIndex >= 0) {
+          if (window.confirm(`Overwrite "${currentStrategyName}" in your saved list and download the full record to your computer?`)) {
+              setSavedStrategies(prev => {
+                  const copy = [...prev];
+                  copy[existingIndex] = strategyConfig;
+                  return copy;
+              });
+          } else {
+              proceed = false;
+          }
+      } else {
+          setSavedStrategies(prev => [...prev, strategyConfig]);
+      }
+
+      // 3. Trigger File Download
+      if (proceed) {
+          try {
+              const blob = new Blob([JSON.stringify(fullExport, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              const safeName = currentStrategyName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+              link.download = `${safeName}_${Date.now()}.json`;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+          } catch (e) {
+              console.error("Download failed:", e);
+              alert("Strategy saved to app, but file download failed.");
+          }
+      }
+  };
+
+  const handleLoadStrategy = (strategy: SavedStrategy) => {
+      if (simStatus !== 'IDLE') return;
+      if (!window.confirm("Load strategy? Unsaved changes will be lost.")) return;
+      
+      // Sanitize lanes to ensure new config properties (like chainSteps) exist even if loading old strategy
+      const sanitizedLanes = strategy.lanes.map(l => ({
+          ...l,
+          config: {
+              ...createDefaultConfig(), // Start with defaults
+              ...l.config, // Override with saved values
+              chainSteps: l.config.chainSteps || [] // Explicitly ensure array
+          }
+      }));
+      setLanes(sanitizedLanes);
+
+      if (sanitizedLanes.length > 0) setActiveLaneId(sanitizedLanes[0].id);
+      if (strategy.settings) setSettings(prev => ({...prev, ...strategy.settings}));
+      
+      // Restore saved layouts if they exist in the strategy
+      if (strategy.savedLayouts) {
+          setSavedLayouts(strategy.savedLayouts);
+      }
+      
+      setCurrentStrategyName(strategy.name);
+      setHistory([]);
+      setBankroll(strategy.settings.startingBankroll || 1000);
+  };
+
+  const handleImportStrategy = (imported: SavedStrategy) => {
+      // Add to saved strategies list
+      const exists = savedStrategies.find(s => s.id === imported.id || s.name === imported.name);
+      if (!exists) {
+          setSavedStrategies(prev => [...prev, imported]);
+      }
+      // Load it immediately
+      handleLoadStrategy(imported);
+  };
+
+  const handleDeleteStrategy = (id: string) => {
+      if(window.confirm("Delete this strategy?")) {
+          setSavedStrategies(prev => prev.filter(s => s.id !== id));
+      }
+  };
+
+  const handleNewStrategy = () => {
+      if (simStatus !== 'IDLE') return;
+      if (!window.confirm("Create new strategy? Unsaved changes will be lost.")) return;
+      
+      setLanes([{
+          id: `lane-${Date.now()}`,
+          name: 'Lane 1',
+          color: LANE_COLORS[0],
+          bets: [],
+          triggerBets: [],
+          config: createDefaultConfig(),
+          enabled: true
+      }]);
+      setActiveLaneId(`lane-${Date.now()}`); 
+      setCurrentStrategyName("New Strategy");
+      setHistory([]);
+      setBankroll(settings.startingBankroll);
+  };
+
+  // --- Lane Management ---
+  const handleAddLane = () => {
+      const active = getActiveLane();
+      const nextIndex = lanes.length;
+      const color = LANE_COLORS[nextIndex % LANE_COLORS.length];
+      
+      const newLane: Lane = {
+          ...active,
+          id: `lane-${Date.now()}`,
+          name: `Lane ${nextIndex + 1}`,
+          bets: [],
+          triggerBets: [],
+          config: { ...active.config },
+          color: color,
+          enabled: true
+      };
+      setLanes(prev => [...prev, newLane]);
+      setActiveLaneId(newLane.id);
+  };
+
+  const handleRenameLane = (id: string, newName: string) => {
+      setLanes(prev => prev.map(l => l.id === id ? { ...l, name: newName } : l));
+  };
+
+  const handleDeleteLane = (id: string) => {
+      if (lanes.length <= 1) return;
+      if (!window.confirm("Delete this lane?")) return;
+      
+      const newLanes = lanes.filter(l => l.id !== id);
+      setLanes(newLanes);
+      if (activeLaneId === id) setActiveLaneId(newLanes[0].id);
+  };
+
+  const handleUpdateLaneConfig = (newConfig: ProgressionConfig) => {
+      updateActiveLane(l => ({ ...l, config: newConfig }));
+  };
+
+  const handleUpdateTriggerBets = (newTriggers: TriggerBet[]) => {
+      if (typeof newTriggers === 'function') {
+          updateActiveLane(l => ({ ...l, triggerBets: (newTriggers as Function)(l.triggerBets) }));
+      } else {
+          updateActiveLane(l => ({ ...l, triggerBets: newTriggers }));
+      }
+  };
+
+  // --- Undo/Bets Logic ---
+  const handleUndo = () => {
+    if (simStatus !== 'IDLE' || undoStack.length === 0) return;
+    const previousLanes = undoStack[undoStack.length - 1];
+    setUndoStack(prev => prev.slice(0, -1));
+    setLanes(previousLanes);
+    if (!previousLanes.find(l => l.id === activeLaneId)) {
+        setActiveLaneId(previousLanes[0].id);
+    }
+  };
 
   const handleBetSelect = (placement: BetPlacement) => {
     if (simStatus !== 'IDLE') return;
+    updateActiveLane(lane => {
+        const existingBetIndex = lane.bets.findIndex(b => getPlacementIdentifier(b.placement) === getPlacementIdentifier(placement));
+        let newBets = [...lane.bets];
+        if (existingBetIndex >= 0) {
+            newBets[existingBetIndex] = { ...newBets[existingBetIndex], amount: newBets[existingBetIndex].amount + selectedChip };
+        } else {
+            newBets.push({ id: Date.now().toString() + Math.random(), placement, amount: selectedChip });
+        }
+        return { ...lane, bets: newBets };
+    });
+  };
 
-    setCurrentBets(prev => {
-      const existingBetIndex = prev.findIndex(b => getPlacementIdentifier(b.placement) === getPlacementIdentifier(placement));
-      
-      if (existingBetIndex >= 0) {
-        // Update existing bet
-        const updated = [...prev];
-        updated[existingBetIndex] = {
-          ...updated[existingBetIndex],
-          amount: updated[existingBetIndex].amount + selectedChip
-        };
-        return updated;
-      } else {
-        // Add new bet
-        return [...prev, {
-          id: Date.now().toString() + Math.random(),
-          placement,
-          amount: selectedChip
-        }];
-      }
+  const handleRemoveBet = (placement: BetPlacement, removeAll: boolean) => {
+    if (simStatus !== 'IDLE') return;
+    updateActiveLane(lane => {
+        const id = getPlacementIdentifier(placement);
+        const index = lane.bets.findIndex(b => getPlacementIdentifier(b.placement) === id);
+        if (index === -1) return lane;
+
+        let newBets = [...lane.bets];
+        if (removeAll || newBets[index].amount <= selectedChip) {
+            newBets = newBets.filter((_, i) => i !== index);
+        } else {
+            newBets[index] = { ...newBets[index], amount: newBets[index].amount - selectedChip };
+        }
+        return { ...lane, bets: newBets };
     });
   };
 
   const handleClearBets = () => {
-    if (simStatus === 'IDLE') setCurrentBets([]);
+      if (simStatus === 'IDLE') updateActiveLane(l => ({ ...l, bets: [] }));
+  };
+
+  // --- Layout Helpers ---
+  const handleSaveLayout = (e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    
+    const active = getActiveLane();
+    
+    // Instant save (no prompt) if bets exist
+    if (active.bets.length === 0) return;
+    
+    const nextNum = savedLayouts.length + 1;
+    const finalName = `Bet ${nextNum}`;
+    
+    // Deep copy bets to ensure safe storage
+    const betsCopy = active.bets.map(b => ({...b}));
+
+    setSavedLayouts(prev => [...prev, { 
+        id: `layout-${Date.now()}-${Math.random()}`, 
+        name: finalName, 
+        bets: betsCopy 
+    }]);
+  };
+
+  const handleLoadLayout = (layout: SavedLayout) => {
+    if (simStatus !== 'IDLE') return;
+    // Replace current bets with the saved ones (clone them)
+    const newBets = layout.bets.map(b => ({
+        ...b,
+        id: Date.now().toString() + Math.random() // New IDs for the board instances
+    }));
+    
+    updateActiveLane(l => ({ 
+        ...l, 
+        bets: newBets 
+    }));
   };
   
-  const handleRemoveBet = (placement: BetPlacement, removeAll: boolean) => {
-    if (simStatus !== 'IDLE') return;
-    
-    setCurrentBets(prev => {
-        const id = getPlacementIdentifier(placement);
-        const index = prev.findIndex(b => getPlacementIdentifier(b.placement) === id);
-        if (index === -1) return prev;
-
-        if (removeAll) {
-            return prev.filter((_, i) => i !== index);
-        } else {
-            const bet = prev[index];
-            if (bet.amount <= selectedChip) {
-                return prev.filter((_, i) => i !== index);
-            }
-            const updated = [...prev];
-            updated[index] = { ...bet, amount: bet.amount - selectedChip };
-            return updated;
-        }
-    });
+  const handleDeleteLayout = (id: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if(window.confirm("Delete layout?")) setSavedLayouts(p => p.filter(l => l.id !== id));
   };
 
-  // --- Simulation Logic ---
+  const handleClearAllLayouts = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (savedLayouts.length === 0) return;
+    if (window.confirm("Clear ALL saved favorite layouts? This cannot be undone.")) {
+        setSavedLayouts([]);
+    }
+  };
+
+  // --- SIMULATION ENGINE ---
+  // CODE NOTE: DONT CHANGE THE STRATEGY SAVE AND NEW SIMULATION SET UP. LEAVE IT AS IS.
 
   const waitForSignal = async (signal: AbortSignal) => {
     if (signal.aborted) throw new Error('Aborted');
-
-    // Handle Pause loop
     while (simStatusRef.current === 'PAUSED') {
         if (signal.aborted) throw new Error('Aborted');
-        await new Promise<void>(resolve => {
-            pauseResolverRef.current = resolve;
-        });
+        await new Promise<void>(r => { pauseResolverRef.current = r; });
         pauseResolverRef.current = null;
     }
-
     if (signal.aborted) throw new Error('Aborted');
-
-    // Handle Speed
-    const currentSpeed = speedRef.current;
-    if (currentSpeed === 'SLOW') {
-        await new Promise<void>(resolve => {
-            nextSpinResolverRef.current = resolve;
-        });
-        nextSpinResolverRef.current = null;
-    } else if (currentSpeed === 'MEDIUM') {
-        await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    // FAST: no delay
     
-    if (signal.aborted) throw new Error('Aborted');
+    if (speedRef.current === 'SLOW') {
+        await new Promise<void>(r => { nextSpinResolverRef.current = r; });
+        nextSpinResolverRef.current = null;
+    } else if (speedRef.current === 'MEDIUM') {
+        await new Promise(r => setTimeout(r, 500));
+    }
   };
 
-  const generateStats = (
-      numSims: number, 
-      wins: number, 
-      losses: number, 
-      finalBankrolls: number[], 
-      totalSpins: number, 
-      lastHistory: SimulationStep[],
-      runId: number
-    ) => {
+  const generateStats = (numSims: number, wins: number, losses: number, finalBankrolls: number[], totalSpins: number, lastHistory: SimulationStep[], runId: number) => {
       if (!isMountedRef.current) return;
-
-      const avgFinalBankroll = finalBankrolls.reduce((a, b) => a + b, 0) / numSims;
-      const bestRun = Math.max(...finalBankrolls);
-      const worstRun = Math.min(...finalBankrolls);
-      const avgSpins = totalSpins / numSims;
-
       const stats: BatchStats = {
           totalSimulations: numSims,
-          wins,
-          losses,
-          avgFinalBankroll,
-          bestRun,
-          worstRun,
-          avgSpinsToFinish: avgSpins
+          wins, losses,
+          avgFinalBankroll: finalBankrolls.reduce((a, b) => a + b, 0) / numSims,
+          bestRun: Math.max(...finalBankrolls),
+          worstRun: Math.min(...finalBankrolls),
+          avgSpinsToFinish: totalSpins / numSims
       };
-
       setBatchStats(stats);
       setSimStatus('IDLE');
-
-      // Trigger AI Analysis
-      // Use detailed analysis for single sim, batch analysis for multiple
+      
       const analysisPromise = (numSims === 1 && lastHistory.length > 0)
         ? analyzeSimulationResults(settings.startingBankroll, finalBankrolls[0], lastHistory.length, lastHistory)
         : analyzeBatchResults(stats);
 
       analysisPromise.then(analysis => {
-        // Only update if mounted and this analysis corresponds to the latest run
-        if(isMountedRef.current && analysisIdRef.current === runId) {
-            setAiAnalysis(analysis);
-        }
+        if(isMountedRef.current && analysisIdRef.current === runId) setAiAnalysis(analysis);
       });
   };
 
@@ -208,512 +489,578 @@ const App: React.FC = () => {
     const numSims = settings.numberOfSimulations;
     const spinsPerSim = settings.spinsPerSimulation;
     
-    // --- MODE CHECK: STATIC ---
-    if (strategyConfig.strategyMode === 'STATIC') {
-        if (currentBets.length === 0) {
-            alert("Please place bets first for Static Mode!");
-            setSimStatus('IDLE');
-            return;
-        }
-    } 
-    
-    // --- MODE CHECK: ROTATING ---
-    let parsedRotation: BetPlacement[] = [];
-    if (strategyConfig.strategyMode === 'ROTATING') {
-        try {
-            parsedRotation = parseSequence(strategyConfig.sequence);
-            if (parsedRotation.length === 0) {
-                alert("Please enter a valid bet sequence for Rotating Mode (e.g., 'red, black')");
-                setSimStatus('IDLE');
-                return;
-            }
-        } catch (e: any) {
-            alert(e.message);
-            setSimStatus('IDLE');
-            return;
-        }
+    const enabledLanes = lanes.filter(l => l.enabled);
+    if (enabledLanes.length === 0) {
+        alert("Enable at least one lane!");
+        setSimStatus('IDLE');
+        return;
     }
 
-    // Mark current run ID for AI Analysis validity
+    // Safety Check for missing bets in Static Mode
+    // MOD: Check if ALL lanes are missing bets. If at least ONE is valid, we run.
+    const allLanesMissingBets = enabledLanes.every(l => {
+        if (l.config.strategyMode === 'CHAIN') return (l.config.chainSteps || []).length === 0;
+        if (l.config.strategyMode === 'STATIC') return l.bets.length === 0 && l.triggerBets.length === 0;
+        return false;
+    });
+
+    if (allLanesMissingBets) {
+        alert("All enabled lanes are empty! Please configure at least one lane with bets or a chain sequence.");
+        setSimStatus('IDLE');
+        return;
+    }
+    
+    const lanePrecalc = enabledLanes.map(l => ({
+        laneId: l.id,
+        parsedSequence: l.config.strategyMode === 'ROTATING' ? parseSequence(l.config.sequence) : []
+    }));
+    
     const runId = Date.now();
     analysisIdRef.current = runId;
 
     let allFinalBankrolls: number[] = [];
-    let wins = 0;
-    let losses = 0;
-    let totalSpinsToFinish = 0;
-    
-    // We maintain a separate array for the *final* run's history to update the graph at the end
+    let wins = 0, losses = 0, totalSpinsToFinish = 0;
     let lastSimHistory: SimulationStep[] = [];
     let lastFinalBankroll = settings.startingBankroll;
-
-    // UI Throttling: Track last update time to prevent render flooding
+    
     let lastUiUpdateTime = 0;
-    const UI_UPDATE_INTERVAL_MS = 50; // Max 20fps updates during fast runs
+    const UI_UPDATE_INTERVAL_MS = 50;
 
     try {
         for (let s = 0; s < numSims; s++) {
             if (signal.aborted) break;
-
-            // Reset visual state for new simulation
+            
+            // Reset Sim State
             if (isMountedRef.current) {
                 setHistory([]);
                 setBankroll(settings.startingBankroll);
             }
-
-            let currentBankroll = settings.startingBankroll; 
             
-            // STATIC State
-            let currentMultiplier = 1;
-            let progressionIndex = 0; // Track Fibonacci step
-            
-            // ROTATING State
-            let rotatingIndex = 0;
-            let rotatingUnits = 1;
-
-            let sessionBaselineBankroll = currentBankroll; // For reset on profit logic
-            
-            let simHistory: SimulationStep[] = [];
-            // Buffer for throttling UI updates
-            let historyBuffer: SimulationStep[] = [];
+            let currentBankroll = settings.startingBankroll;
             let simSpins = 0;
+            let simHistory: SimulationStep[] = [];
+            let historyBuffer: SimulationStep[] = [];
+
+            let laneRunningBalances: Record<string, number> = {};
+            const startPerLane = settings.startingBankroll / enabledLanes.length;
+            enabledLanes.forEach(l => {
+                laneRunningBalances[l.id] = startPerLane;
+            });
+
+            // Initialize Runtime State
+            const runtimeLanes: RuntimeLane[] = enabledLanes.map(l => ({
+                ...l,
+                multiplier: 1,
+                progressionIndex: 0,
+                rotatingIndex: 0,
+                rotatingUnits: 1,
+                sessionProfit: 0,
+                chainIndex: 0 // Start at step 0
+            }));
 
             for (let i = 0; i < spinsPerSim; i++) {
-                // WAIT logic (pause/speed control)
                 await waitForSignal(signal);
+                
+                // Yield periodically in FAST mode to allow UI interactions (like Stop/Exit Fullscreen) to fire
+                if (speedRef.current === 'FAST' && i % 20 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
 
                 simSpins++;
-                
-                // Check limits (Stop Loss)
-                if (currentBankroll <= settings.startingBankroll - strategyConfig.stopLoss) break;
-                
-                // Check Profit Goal if enabled
-                if (strategyConfig.useTotalProfitGoal && currentBankroll >= settings.startingBankroll + strategyConfig.totalProfitGoal) break;
-                
-                // Bust
+
+                if (settings.useTotalProfitGoal && currentBankroll >= settings.startingBankroll + settings.totalProfitGoal) break;
                 if (currentBankroll <= 0) break;
+
+                let totalSpinWager = 0;
+                const laneBetsMap = new Map<string, { bets: Bet[], wager: number }>();
+                const activeTriggersForStep: string[] = [];
+                const stepBetDescriptions: string[] = [];
                 
-                // Reset on Session Profit
-                if (strategyConfig.useResetOnSessionProfit && strategyConfig.resetOnSessionProfit > 0) {
-                    const currentSessionProfit = currentBankroll - sessionBaselineBankroll;
-                    if (currentSessionProfit >= strategyConfig.resetOnSessionProfit) {
-                        // Reset both modes
-                        currentMultiplier = 1;
-                        progressionIndex = 0;
-                        rotatingUnits = 1; // Or minUnits? Assuming 1 for baseline reset.
-                        rotatingIndex = 0;
-                        sessionBaselineBankroll = currentBankroll; 
+                // Temporary store for chainIndex (before update) so we can log it
+                const laneChainIndices: Record<string, number> = {};
+
+                for (let rLane of runtimeLanes) {
+                    // Capture state before processing
+                    laneChainIndices[rLane.id] = rLane.chainIndex;
+                    
+                    const { bets, wager, activeTriggers, updatedLaneState } = prepareLaneForSpin(
+                        rLane, 
+                        settings, 
+                        simHistory, 
+                        lanePrecalc.find(p => p.laneId === rLane.id)?.parsedSequence || []
+                    );
+                    
+                    Object.assign(rLane, updatedLaneState);
+                    laneBetsMap.set(rLane.id, { bets, wager });
+                    activeTriggersForStep.push(...activeTriggers);
+                    totalSpinWager += wager;
+
+                    // UPDATED: Show ALL bets, do not truncate
+                    if (bets.length > 0) {
+                        const betSummary = bets.map(b => `${b.placement.displayName} ($${b.amount})`).join(', ');
+                        stepBetDescriptions.push(`${rLane.name}: ${betSummary}`);
                     }
                 }
 
-                let spinBets: Bet[] = [];
-                let totalWager = 0;
-
-                // --- BUILD BETS BASED ON MODE ---
-                if (strategyConfig.strategyMode === 'STATIC') {
-                    // STATIC LOGIC
-                    let effectiveMultiplier = currentMultiplier;
-                    const totalBaseWager = currentBets.reduce((sum, b) => sum + b.amount, 0);
-
-                    if (totalBaseWager === 0) break; 
-
-                    let projectedWager = totalBaseWager * effectiveMultiplier;
-
-                    // Cap by table max
-                    if (projectedWager > settings.tableMax) {
-                        effectiveMultiplier = settings.tableMax / totalBaseWager;
-                        projectedWager = totalBaseWager * effectiveMultiplier;
-                    }
-                    // Cap by bankroll
-                    if (projectedWager > currentBankroll) {
-                        effectiveMultiplier = currentBankroll / totalBaseWager;
-                        projectedWager = totalBaseWager * effectiveMultiplier;
-                    }
-                    // Table Min
-                    if (projectedWager < settings.tableMin && currentBankroll >= settings.tableMin) {
-                        effectiveMultiplier = settings.tableMin / totalBaseWager;
-                        projectedWager = totalBaseWager * effectiveMultiplier;
-                    }
-                    // Min valid bet
-                    if (projectedWager < 1) break;
-
-                    spinBets = currentBets.map(b => ({
-                        ...b,
-                        amount: Math.max(1, Math.floor(b.amount * effectiveMultiplier)) 
-                    }));
-
-                    totalWager = spinBets.reduce((sum, b) => sum + b.amount, 0);
-
-                } else {
-                    // ROTATING LOGIC
-                    const currentPlacement = parsedRotation[rotatingIndex];
-                    
-                    let wagerAmount = Math.floor(rotatingUnits * strategyConfig.baseUnit);
-                    
-                    // Table Limits
-                    wagerAmount = Math.max(settings.tableMin, Math.min(settings.tableMax, wagerAmount));
-                    
-                    // Bankroll Limit
-                    wagerAmount = Math.min(currentBankroll, wagerAmount);
-
-                    if (wagerAmount < 1) break; // Cannot bet
-
-                    spinBets = [{
-                        id: `rot-${i}`,
-                        placement: currentPlacement,
-                        amount: wagerAmount
-                    }];
-                    
-                    totalWager = wagerAmount;
-                }
-
-                // --- EXECUTE SPIN ---
-                if (totalWager <= 0 || totalWager > currentBankroll) break;
-
+                if (totalSpinWager > currentBankroll) break; 
+               
                 const result = spinWheel();
-                const winnings = calculateWinnings(spinBets, result);
-                const profit = winnings - totalWager;
                 
-                currentBankroll += profit;
+                let globalProfit = 0; // Fixed: Start at 0 because updateLaneAfterSpin returns Net Profit
+                const laneDetails: { laneId: string; profit: number; chainIndex?: number }[] = [];
 
-                const newStep: SimulationStep = {
-                  spinIndex: i + 1,
-                  result,
-                  betAmount: totalWager,
-                  outcome: profit,
-                  bankroll: currentBankroll
+                for (let rLane of runtimeLanes) {
+                    const data = laneBetsMap.get(rLane.id);
+                    if (!data) continue;
+
+                    const { profit, updatedLaneState } = updateLaneAfterSpin(
+                        rLane,
+                        data.bets,
+                        data.wager,
+                        result,
+                        rLane.config,
+                        lanePrecalc.find(p => p.laneId === rLane.id)?.parsedSequence || []
+                    );
+
+                    Object.assign(rLane, updatedLaneState);
+                    globalProfit += profit; // Sum of net profits
+
+                    laneRunningBalances[rLane.id] = (laneRunningBalances[rLane.id]) + profit;
+                    
+                    laneDetails.push({ 
+                        laneId: rLane.id, 
+                        profit: profit, 
+                        chainIndex: rLane.chainIndex // Store the state for the NEXT spin
+                    });
+                }
+
+                currentBankroll += globalProfit;
+
+                const step: SimulationStep = {
+                    spinIndex: i + 1,
+                    result,
+                    betAmount: totalSpinWager,
+                    outcome: globalProfit,
+                    bankroll: currentBankroll,
+                    laneDetails,
+                    laneBankrolls: { ...laneRunningBalances },
+                    activeTriggers: activeTriggersForStep,
+                    betDescriptions: stepBetDescriptions
                 };
-
-                simHistory.push(newStep);
-                historyBuffer.push(newStep);
                 
-                // --- UPDATE UI (THROTTLED) ---
-                const now = Date.now();
-                const isFast = speedRef.current === 'FAST';
-                const shouldUpdate = !isFast || (now - lastUiUpdateTime > UI_UPDATE_INTERVAL_MS) || (i === spinsPerSim - 1);
+                simHistory.push(step);
+                historyBuffer.push(step);
 
-                if (shouldUpdate && isMountedRef.current) {
-                    const bufferedSteps = [...historyBuffer];
-                    setHistory(prev => [...prev, ...bufferedSteps]); 
+                const n = Date.now();
+                if ((speedRef.current !== 'FAST' || n - lastUiUpdateTime > UI_UPDATE_INTERVAL_MS || i === spinsPerSim - 1) && isMountedRef.current) {
+                    setHistory(prev => [...prev, ...historyBuffer]);
                     setBankroll(currentBankroll);
-                    historyBuffer = []; 
-                    lastUiUpdateTime = now;
+                    historyBuffer = [];
+                    lastUiUpdateTime = n;
                 }
-
-                // --- PROGRESSION LOGIC BASED ON MODE ---
-                if (profit > 0) {
-                  // WIN
-                  if (strategyConfig.strategyMode === 'STATIC') {
-                      switch (strategyConfig.onWinAction) {
-                        case ProgressionAction.RESET: 
-                            currentMultiplier = 1; 
-                            progressionIndex = 0;
-                            break;
-                        case ProgressionAction.MULTIPLY: 
-                            currentMultiplier *= strategyConfig.onWinValue; 
-                            break;
-                        case ProgressionAction.ADD_UNITS: 
-                            currentMultiplier += strategyConfig.onWinValue; 
-                            break;
-                        case ProgressionAction.SUBTRACT_UNITS: 
-                            currentMultiplier = Math.max(1, currentMultiplier - strategyConfig.onWinValue); 
-                            break;
-                        case ProgressionAction.FIBONACCI: {
-                            const steps = strategyConfig.onWinValue || 2; 
-                            progressionIndex = Math.max(0, progressionIndex - steps);
-                            currentMultiplier = FIB_SEQUENCE[progressionIndex];
-                            break;
-                        }
-                        case ProgressionAction.DO_NOTHING: 
-                            break;
-                      }
-                      currentMultiplier = Math.max(1, Math.floor(currentMultiplier));
-                  } else {
-                      // ROTATING WIN
-                      rotatingUnits += strategyConfig.onWinUnits;
-                      // Clamp
-                      rotatingUnits = Math.max(strategyConfig.minUnits, rotatingUnits);
-                      
-                      // Rotate sequence if enabled
-                      if (strategyConfig.rotateOnWin) {
-                        rotatingIndex = (rotatingIndex + 1) % parsedRotation.length;
-                      }
-                  }
-                } else {
-                  // LOSS
-                  if (strategyConfig.strategyMode === 'STATIC') {
-                      switch (strategyConfig.onLossAction) {
-                        case ProgressionAction.RESET: 
-                            currentMultiplier = 1; 
-                            progressionIndex = 0;
-                            break;
-                        case ProgressionAction.MULTIPLY: 
-                            currentMultiplier *= strategyConfig.onLossValue; 
-                            break;
-                        case ProgressionAction.ADD_UNITS: 
-                            currentMultiplier += strategyConfig.onLossValue; 
-                            break;
-                        case ProgressionAction.SUBTRACT_UNITS: 
-                            currentMultiplier = Math.max(1, currentMultiplier - strategyConfig.onLossValue); 
-                            break;
-                        case ProgressionAction.FIBONACCI: {
-                            const steps = strategyConfig.onLossValue || 1; 
-                            progressionIndex = Math.min(FIB_SEQUENCE.length - 1, progressionIndex + steps);
-                            currentMultiplier = FIB_SEQUENCE[progressionIndex];
-                            break;
-                        }
-                        case ProgressionAction.DO_NOTHING: 
-                            break;
-                      }
-                      currentMultiplier = Math.max(1, Math.floor(currentMultiplier));
-                  } else {
-                      // ROTATING LOSS
-                      rotatingUnits += strategyConfig.onLossUnits;
-                      // Clamp
-                      rotatingUnits = Math.max(strategyConfig.minUnits, rotatingUnits);
-                      
-                      // Rotate sequence if enabled
-                      if (strategyConfig.rotateOnLoss) {
-                        rotatingIndex = (rotatingIndex + 1) % parsedRotation.length;
-                      }
-                  }
-                }
-            } // End Spin Loop
+            } 
 
             allFinalBankrolls.push(currentBankroll);
             totalSpinsToFinish += simSpins;
-            
             if (currentBankroll > settings.startingBankroll) wins++;
             else if (currentBankroll < settings.startingBankroll) losses++;
-
+            
             lastSimHistory = simHistory;
             lastFinalBankroll = currentBankroll;
-
-            if (s < numSims - 1 && speedRef.current !== 'FAST') {
-                await new Promise(r => setTimeout(r, 500));
-            }
-        } // End Sim Loop
+            
+            if (s < numSims - 1 && speedRef.current !== 'FAST') await new Promise(r => setTimeout(r, 500));
+        }
 
         if (isMountedRef.current) {
             setBankroll(lastFinalBankroll);
             setHistory(lastSimHistory);
         }
+        generateStats(numSims, wins, losses, allFinalBankrolls, totalSpinsToFinish, lastSimHistory, runId);
 
-        generateStats(numSims, wins, losses, allFinalBankrolls, totalSpinsToFinish, lastSimHistory, runId); 
-
-    } catch (e: any) {
+    } catch(e: any) {
         if (e.message !== 'Aborted') {
             console.error(e);
+            alert("Simulation error: " + e.message);
         }
+        // Force reset IDLE on error to prevent stuck UI
+        if (isMountedRef.current) setSimStatus('IDLE');
     }
   };
 
   const handleStartSimulation = () => {
-    // Basic pre-checks
-    if (strategyConfig.strategyMode === 'STATIC' && currentBets.length === 0) {
-        alert("Place bets first!");
-        return;
-    }
-    
-    setSimStatus('RUNNING');
-    setBatchStats(null);
-    setAiAnalysis('');
-    
-    // Auto maximize the graph view on start
-    setIsGraphFullScreen(true);
-    
-    // Abort previous
-    if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-    }
-    const ac = new AbortController();
-    abortControllerRef.current = ac;
-
-    runInteractiveSimulation(ac.signal);
+     setSimStatus('RUNNING');
+     setBatchStats(null);
+     setAiAnalysis('');
+     setIsGraphFullScreen(true);
+     if (abortControllerRef.current) abortControllerRef.current.abort();
+     const ac = new AbortController();
+     abortControllerRef.current = ac;
+     runInteractiveSimulation(ac.signal);
   };
-
+  
   const handleStop = () => {
-    if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-    }
-    // Wake up any waiting promises so they can process the abort
-    if (pauseResolverRef.current) {
-        pauseResolverRef.current();
-        pauseResolverRef.current = null;
-    }
-    if (nextSpinResolverRef.current) {
-        nextSpinResolverRef.current();
-        nextSpinResolverRef.current = null;
-    }
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    if (pauseResolverRef.current) { pauseResolverRef.current(); pauseResolverRef.current = null; }
+    if (nextSpinResolverRef.current) { nextSpinResolverRef.current(); nextSpinResolverRef.current = null; }
     setSimStatus('IDLE');
   };
 
-  const handlePause = () => {
-    setSimStatus('PAUSED');
-  };
+  const activeLane = getActiveLane();
 
-  const handleResume = () => {
-    setSimStatus('RUNNING');
-    if (pauseResolverRef.current) {
-        pauseResolverRef.current();
-        pauseResolverRef.current = null;
-    }
-  };
+  // Compact Settings Bar
+  const SettingsBar = () => (
+      <div className="flex flex-wrap items-center gap-3 w-full animate-in fade-in slide-in-from-top-4 relative z-10 bg-slate-900/50 p-1.5 rounded-lg border border-slate-800 backdrop-blur-sm">
+          {/* Bankroll */}
+          <div className="flex items-center gap-2 px-2">
+              <span className="text-[10px] uppercase font-bold text-slate-500">Bankroll</span>
+              <div className="flex items-center gap-0.5">
+                  <span className="text-slate-600 text-xs">$</span>
+                  <input type="number" value={settings.startingBankroll}
+                      onChange={(e) => setSettings({ ...settings, startingBankroll: parseInt(e.target.value) || 1000 })}
+                      className="w-16 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+                  />
+              </div>
+          </div>
+          
+          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
 
-  const handleNextSpin = () => {
-    if (nextSpinResolverRef.current) {
-        nextSpinResolverRef.current();
-        nextSpinResolverRef.current = null;
-    }
-  };
+          {/* Spins */}
+          <div className="flex items-center gap-2 px-2">
+              <span className="text-[10px] uppercase font-bold text-slate-500">Spins</span>
+              <input type="number" value={settings.spinsPerSimulation}
+                  onChange={(e) => setSettings({ ...settings, spinsPerSimulation: parseInt(e.target.value) || 100 })}
+                  className="w-12 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+              />
+          </div>
+
+          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
+          
+          {/* # Sims */}
+          <div className="flex items-center gap-2 px-2">
+              <span className="text-[10px] uppercase font-bold text-orange-400"># Sims</span>
+               <input type="number" value={settings.numberOfSimulations}
+                  onChange={(e) => setSettings({ ...settings, numberOfSimulations: parseInt(e.target.value) || 1 })}
+                  className="w-12 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+              />
+          </div>
+          
+          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
+          
+          {/* Profit Goal */}
+          <div className="flex items-center gap-2 px-2">
+              <div className="flex items-center gap-1.5">
+                <input type="checkbox" checked={settings.useTotalProfitGoal} onChange={(e) => setSettings({...settings, useTotalProfitGoal: e.target.checked})} className="w-3 h-3 accent-emerald-500 rounded-sm" disabled={simStatus !== 'IDLE'} />
+                <span className={`text-[10px] uppercase font-bold ${settings.useTotalProfitGoal ? 'text-emerald-400' : 'text-slate-500'}`}>Goal</span>
+              </div>
+              <div className="flex items-center gap-0.5">
+                  <span className={`text-xs ${settings.useTotalProfitGoal ? 'text-slate-600' : 'text-slate-700'}`}>$</span>
+                  <input type="number" value={settings.totalProfitGoal}
+                      onChange={(e) => setSettings({ ...settings, totalProfitGoal: parseInt(e.target.value) || 0 })}
+                      className={`w-14 bg-transparent text-xs font-mono font-bold focus:outline-none text-right ${settings.useTotalProfitGoal ? 'text-white' : 'text-slate-600'}`} disabled={simStatus !== 'IDLE' || !settings.useTotalProfitGoal}
+                  />
+              </div>
+          </div>
+
+          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
+
+          {/* Table Limits */}
+          <div className="flex items-center gap-2 px-2">
+              <span className="text-[10px] uppercase font-bold text-slate-500">Min</span>
+              <input type="number" value={settings.tableMin}
+                  onChange={(e) => setSettings({ ...settings, tableMin: parseInt(e.target.value) || 1 })}
+                  className="w-10 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+              />
+              <span className="text-[10px] uppercase font-bold text-slate-500 ml-1">Max</span>
+              <input type="number" value={settings.tableMax}
+                  onChange={(e) => setSettings({ ...settings, tableMax: parseInt(e.target.value) || 1000 })}
+                  className="w-14 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+              />
+          </div>
+      </div>
+  );
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500/30">
-      <div className="max-w-[1600px] mx-auto p-4 lg:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500/30 pb-10">
+      
+      {/* Sticky Top Header & Settings */}
+      <div className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur shadow-xl border-b border-slate-800/50 pt-2 pb-2 mb-4 px-3 relative overflow-hidden">
+        {/* Binary Background Effect */}
+        <BinaryBackground />
         
-        {/* Left Panel: Strategy & Controls */}
-        <div className="lg:col-span-4 space-y-6">
-            <header className="mb-6">
-                <h1 className="text-3xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-300">
-                    Roulette AI
+        {/* HEADER */}
+        <header className="flex items-center justify-between gap-2 pb-2 relative z-10">
+            <div className="flex items-center gap-3">
+                <h1 className="text-lg font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-300 leading-none">
+                    ProRoulette
                 </h1>
-                <p className="text-slate-500 text-sm">Strategy Simulation & Analysis</p>
-            </header>
+                {batchStats && (
+                    <div className="flex gap-2 text-[10px] bg-slate-900/50 px-2 py-0.5 rounded border border-slate-800 items-center">
+                        <span className={batchStats.wins > batchStats.losses ? "text-green-400 font-bold" : "text-red-400 font-bold"}>
+                            WR {((batchStats.wins / batchStats.totalSimulations) * 100).toFixed(0)}%
+                        </span>
+                        <span className="text-slate-600">|</span>
+                        <span className={batchStats.avgFinalBankroll >= settings.startingBankroll ? "text-green-400" : "text-red-400"}>
+                            Avg ${batchStats.avgFinalBankroll.toFixed(0)}
+                        </span>
+                    </div>
+                )}
+            </div>
+        </header>
 
-            <StrategyPanel 
-                config={strategyConfig}
-                setConfig={setStrategyConfig}
+        {/* 1. SETTINGS BAR */}
+        <SettingsBar />
+      </div>
+
+      <div className="w-full px-2 space-y-2 relative z-10">
+        {/* 2. STRATEGY PANEL (LANES + TABLE) */}
+        <section>
+             <StrategyPanel 
+                // Strategy Management
+                savedStrategies={savedStrategies}
+                currentStrategyName={currentStrategyName}
+                onRenameStrategy={setCurrentStrategyName}
+                onSaveStrategy={handleSaveStrategy}
+                onLoadStrategy={handleLoadStrategy}
+                onNewStrategy={handleNewStrategy}
+                onDeleteStrategy={handleDeleteStrategy}
+                onImportStrategy={handleImportStrategy}
+
+                // Lane Props
+                lanes={lanes}
+                activeLaneId={activeLaneId}
+                onSelectLane={setActiveLaneId}
+                onAddLane={handleAddLane}
+                onDeleteLane={handleDeleteLane}
+                onRenameLane={handleRenameLane}
+                onToggleLane={(id) => updateActiveLane(l => ({...l, enabled: !l.enabled}))}
+                
+                // Active Config
+                config={activeLane.config}
+                setConfig={handleUpdateLaneConfig}
+                
+                // Sim Settings
                 settings={settings}
                 setSettings={setSettings}
                 onSimulate={handleStartSimulation}
                 speed={speed}
                 setSpeed={setSpeed}
                 simStatus={simStatus}
-                onPause={handlePause}
-                onResume={handleResume}
+                onPause={() => setSimStatus('PAUSED')}
+                onResume={() => { setSimStatus('RUNNING'); if (pauseResolverRef.current) pauseResolverRef.current(); }}
                 onStop={handleStop}
-                onNextSpin={handleNextSpin}
-            />
+                onNextSpin={() => { if (nextSpinResolverRef.current) nextSpinResolverRef.current(); }}
+                
+                // Triggers
+                triggerBets={activeLane.triggerBets}
+                setTriggerBets={handleUpdateTriggerBets}
+                
+                // Pass Saved Layouts and Handler
+                savedLayouts={savedLayouts}
+                onSaveCurrentLayout={handleSaveLayout}
+            >
+                {/* INJECT TABLE SECTION AS CHILDREN */}
+                <div className="space-y-2">
+                    {/* Table Header Info */}
+                    <div className="flex items-center justify-between p-2 bg-slate-900/80 backdrop-blur rounded border border-slate-800 shadow-sm overflow-hidden"
+                        style={{ borderTopColor: activeLane.color, borderTopWidth: '3px' }}>
+                         <div className="flex items-center gap-4">
+                            <div>
+                                <div className="text-[9px] uppercase font-bold text-slate-500 tracking-wider">Bankroll</div>
+                                <div className="text-sm font-mono text-white flex items-baseline gap-1">
+                                    ${bankroll.toFixed(0)}
+                                    {bankroll > settings.startingBankroll && <span className="text-[10px] text-green-400 font-bold">(+${(bankroll - settings.startingBankroll).toFixed(0)})</span>}
+                                    {bankroll < settings.startingBankroll && <span className="text-[10px] text-red-400 font-bold">(-${(settings.startingBankroll - bankroll).toFixed(0)})</span>}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[9px] uppercase font-bold text-slate-500 tracking-wider" style={{ color: activeLane.color }}>
+                                    {activeLane.config.strategyMode === 'CHAIN' 
+                                        ? `Chain Step ${activeChainIndex + 1} / ${activeLane.config.chainSteps?.length || 0}` 
+                                        : `${activeLane.name} Bet`}
+                                </div>
+                                <div className="text-sm font-mono text-yellow-400">
+                                    {activeLane.config.strategyMode === 'CHAIN' 
+                                      ? (activeLane.config.chainSteps?.length > 0 
+                                            ? `$${(activeLane.config.chainSteps[activeChainIndex]?.bets || []).reduce((a,b)=>a+b.amount,0)}` 
+                                            : '$0')
+                                      : `$${activeLane.bets.reduce((a,b)=>a+b.amount,0)}`
+                                    }
+                                </div>
+                            </div>
+                         </div>
 
-            {batchStats && (
-                <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 space-y-3 animate-in fade-in slide-in-from-bottom-4">
-                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Results</h3>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div className="flex justify-between">
-                            <span className="text-slate-500">Win Rate:</span>
-                            <span className={batchStats.wins > batchStats.losses ? "text-green-400 font-bold" : "text-red-400 font-bold"}>
-                                {((batchStats.wins / batchStats.totalSimulations) * 100).toFixed(1)}%
-                            </span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-slate-500">Avg Result:</span>
-                            <span className={batchStats.avgFinalBankroll >= settings.startingBankroll ? "text-green-400" : "text-red-400"}>
-                                ${batchStats.avgFinalBankroll.toFixed(0)}
-                            </span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-slate-500">Best Run:</span>
-                            <span className="text-emerald-400">${batchStats.bestRun.toFixed(0)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-slate-500">Worst Run:</span>
-                            <span className="text-rose-400">${batchStats.worstRun.toFixed(0)}</span>
-                        </div>
+                         <div className="flex items-center gap-1">
+                            {/* Undo Button */}
+                            <button 
+                                onClick={handleUndo} 
+                                disabled={simStatus !== 'IDLE' || undoStack.length === 0 || activeLane.config.strategyMode === 'CHAIN'} 
+                                className="p-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-400/10 rounded transition-colors disabled:opacity-30"
+                                title="Undo last change"
+                            >
+                                <Undo2 size={14} />
+                            </button>
+                            
+                            {/* Clear Bets (Trash) Button */}
+                            <button 
+                                onClick={handleClearBets} 
+                                disabled={simStatus !== 'IDLE' || (activeLane.config.strategyMode === 'CHAIN' ? true : activeLane.bets.length === 0)} 
+                                className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded transition-colors disabled:opacity-30"
+                                title={activeLane.config.strategyMode === 'CHAIN' ? "Table is Read-Only in Chain Mode" : "Clear all bets"}
+                            >
+                                <Trash2 size={14} />
+                            </button>
+                            
+                            {/* Reset Simulation Button */}
+                            <button 
+                                onClick={() => { setBankroll(settings.startingBankroll); setHistory([]); setUndoStack(p => [...p, lanes]); }} 
+                                disabled={simStatus !== 'IDLE'} 
+                                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors disabled:opacity-30"
+                                title="Reset Simulation Data"
+                            >
+                                <RotateCcw size={14} />
+                            </button>
+                         </div>
                     </div>
-                    {aiAnalysis && (
-                        <div className="mt-4 pt-4 border-t border-slate-800 text-xs leading-relaxed text-indigo-200/80 italic">
-                             {aiAnalysis}
+
+                    {/* Actual Table */}
+                    <div className="relative overflow-x-auto pb-2 custom-scrollbar flex justify-center bg-slate-900/50 p-2 rounded border border-slate-800 shadow-inner transition-all duration-300"
+                        style={{ 
+                            boxShadow: `inset 0 0 20px ${activeLane.color}10`,
+                            borderColor: `${activeLane.color}40`,
+                            // Dim table if in chain mode to indicate it's not the primary edit surface
+                            opacity: activeLane.config.strategyMode === 'CHAIN' ? 0.6 : 1,
+                            pointerEvents: activeLane.config.strategyMode === 'CHAIN' ? 'none' : 'auto'
+                        }}>
+                        <RouletteTable 
+                            bets={activeLane.config.strategyMode === 'CHAIN' 
+                                ? (activeLane.config.chainSteps?.length > 0 
+                                    ? (activeLane.config.chainSteps[activeChainIndex]?.bets || []) 
+                                    : []) 
+                                : activeLane.bets}
+                            onBetSelect={handleBetSelect}
+                            onStackDelete={handleRemoveBet}
+                            triggerMode={false}
+                        />
+                        {activeLane.config.strategyMode === 'CHAIN' && (
+                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                 <span className="bg-black/70 text-white px-3 py-1 rounded-full text-xs font-bold border border-white/20">
+                                     Chain Mode Active
+                                 </span>
+                             </div>
+                        )}
+                    </div>
+
+                    {/* Chips & Layouts */}
+                    {activeLane.config.strategyMode === 'CHAIN' ? (
+                        <div className="flex items-center justify-between p-2 bg-indigo-900/20 border border-indigo-500/30 rounded-lg animate-in fade-in slide-in-from-top-2">
+                             <div className="flex items-center gap-2">
+                                <div className="p-1.5 bg-indigo-500/20 rounded-full text-indigo-300">
+                                   <Link2 size={14} />
+                                </div>
+                                <div className="flex flex-col">
+                                   <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider">Chain Mode Active</span>
+                                   <span className="text-[10px] text-slate-400">Bets are controlled by the sequence. Switch mode to edit.</span>
+                                </div>
+                             </div>
+                             <button 
+                                 onClick={() => handleUpdateLaneConfig({ ...activeLane.config, strategyMode: 'STATIC' })}
+                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold rounded shadow transition-colors"
+                             >
+                                 <Edit3 size={10} /> Switch to Board Layout
+                             </button>
                         </div>
+                    ) : (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="flex justify-center bg-slate-900 rounded border border-slate-800 p-1">
+                            <ChipSelector selectedChip={selectedChip} onSelectChip={setSelectedChip} />
+                        </div>
+                        
+                        {/* DO NOT CHANGE OR EDIT THESE BUTTONS. THEY ARE PERFECT. LOCK IT. */}
+                        <div className="flex-1 bg-slate-900 rounded border border-slate-800 p-2 flex flex-col justify-center">
+                            <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                    <Save size={10} /> Saved Layouts
+                                </div>
+                                <div className="flex items-center gap-1">
+                                    {savedLayouts.length > 0 && (
+                                        <button 
+                                            onClick={handleClearAllLayouts}
+                                            disabled={simStatus !== 'IDLE'}
+                                            className="p-1 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded transition-colors"
+                                            title="Clear All Favorites"
+                                        >
+                                            <Trash2 size={10} />
+                                        </button>
+                                    )}
+                                    {/* Header ADD button - functions identically to clicking a slot */}
+                                    <button onClick={(e) => handleSaveLayout(e)} disabled={simStatus !== 'IDLE' || activeLane.bets.length === 0} className="flex items-center gap-1 px-1.5 py-0.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:bg-slate-800 text-white text-[9px] font-bold rounded shadow transition-colors">
+                                        <Plus size={10} /> Add Favorite
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                                {[...Array(Math.max(3, savedLayouts.length + 1))].slice(0, Math.max(3, savedLayouts.length + 1)).map((_, idx) => {
+                                    const layout = savedLayouts[idx];
+                                    if (layout) {
+                                        return (
+                                            <div key={layout.id} className="group relative flex items-center bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded overflow-hidden transition-all">
+                                                <button onClick={() => handleLoadLayout(layout)} disabled={simStatus !== 'IDLE'} className="px-2 py-1 text-[10px] text-slate-200 font-medium flex items-center gap-1 disabled:opacity-50 min-w-[70px] justify-between">
+                                                    <span className="truncate max-w-[80px]">{layout.name}</span>
+                                                    <span className="text-[9px] text-slate-500 bg-slate-900 px-1 rounded-full ml-1">${layout.bets.reduce((a,b)=>a+b.amount,0)}</span>
+                                                </button>
+                                                <button onClick={(e) => handleDeleteLayout(layout.id, e)} className="px-1 py-1 text-slate-600 hover:text-red-400 hover:bg-slate-900/50 border-l border-slate-700 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <X size={10} />
+                                                </button>
+                                            </div>
+                                        );
+                                    } else {
+                                        return (
+                                            <button 
+                                                key={`slot-${idx}`} 
+                                                onClick={(e) => handleSaveLayout(e)}
+                                                disabled={simStatus !== 'IDLE' || activeLane.bets.length === 0}
+                                                className="px-2 py-1 bg-slate-800/30 hover:bg-indigo-900/20 border border-dashed border-slate-700 hover:border-indigo-500/50 rounded text-[10px] text-slate-500 hover:text-indigo-400 font-medium transition-all min-w-[70px] flex items-center justify-center gap-1 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:border-slate-800 disabled:hover:text-slate-700"
+                                            >
+                                                <ArrowDownToLine size={10} /> Save Current
+                                            </button>
+                                        );
+                                    }
+                                })}
+                            </div>
+                        </div>
+                        {/* END OF LOCKED BUTTONS SECTION */}
+                    </div>
                     )}
                 </div>
-            )}
-        </div>
+            </StrategyPanel>
+        </section>
 
-        {/* Center/Right: Table & Viz */}
-        <div className="lg:col-span-8 space-y-6">
-            
-            {/* Bankroll & Status Bar */}
-            <div className="flex items-center justify-between bg-slate-900/80 backdrop-blur rounded-xl p-4 border border-slate-800 shadow-xl">
-                 <div className="flex items-center gap-6">
-                    <div>
-                        <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Bankroll</div>
-                        <div className="text-2xl font-mono text-white flex items-baseline gap-1">
-                            ${bankroll.toFixed(0)}
-                            {bankroll > settings.startingBankroll && <span className="text-xs text-green-400 font-bold">(+${(bankroll - settings.startingBankroll).toFixed(0)})</span>}
-                            {bankroll < settings.startingBankroll && <span className="text-xs text-red-400 font-bold">(-${(settings.startingBankroll - bankroll).toFixed(0)})</span>}
-                        </div>
-                    </div>
-                    <div>
-                        <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Current Bet</div>
-                        <div className="text-xl font-mono text-yellow-400">${currentBets.reduce((a,b)=>a+b.amount,0)}</div>
-                    </div>
-                 </div>
-
-                 <div className="flex items-center gap-3">
-                    <button 
-                        onClick={handleClearBets}
-                        disabled={simStatus !== 'IDLE' || currentBets.length === 0}
-                        className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
-                    >
-                        <Trash2 size={16} /> Clear
-                    </button>
-                    <button 
-                        onClick={() => {
-                            setBankroll(settings.startingBankroll);
-                            setHistory([]);
-                        }}
-                        disabled={simStatus !== 'IDLE'}
-                        className="flex items-center gap-2 px-3 py-2 text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors disabled:opacity-30"
-                    >
-                        <RotateCcw size={16} /> Reset
-                    </button>
-                 </div>
-            </div>
-
-            {/* Roulette Board */}
-            <div className="relative overflow-x-auto pb-4 custom-scrollbar flex justify-center bg-slate-900/50 p-6 rounded-2xl border border-slate-800 shadow-inner">
-                <RouletteTable 
-                    bets={currentBets}
-                    onBetSelect={handleBetSelect}
-                    onStackDelete={handleRemoveBet}
-                    triggerMode={false}
+        {/* 4. CHARTS / LOGS */}
+        <section className="grid grid-cols-1 md:grid-cols-12 gap-2">
+             <div className="md:col-span-4 h-[280px]">
+                <SpinLog history={history} lanes={lanes} className="h-full" />
+             </div>
+             <div className="md:col-span-8 h-[280px]">
+                <StatsChart 
+                    data={history} 
+                    initialBalance={settings.startingBankroll}
+                    lanes={lanes}
+                    className="h-full"
+                    onRunSimulation={handleStartSimulation}
+                    simStatus={simStatus}
+                    onPause={() => setSimStatus('PAUSED')}
+                    onResume={() => { setSimStatus('RUNNING'); if (pauseResolverRef.current) pauseResolverRef.current(); }}
+                    onStop={handleStop}
+                    speed={speed}
+                    onSpeedChange={setSpeed}
+                    isFullScreen={isGraphFullScreen}
+                    onToggleFullScreen={() => setIsGraphFullScreen(!isGraphFullScreen)}
+                    settings={settings}
+                    onUpdateSettings={setSettings}
+                    strategyConfig={activeLane.config}
                 />
-            </div>
-            
-            {/* Chip Selector */}
-            <div className="flex justify-center">
-                 <ChipSelector 
-                    selectedChip={selectedChip} 
-                    onSelectChip={setSelectedChip} 
-                />
-            </div>
-
-            {/* Data Visualization Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 h-[26rem]">
-                <div className="md:col-span-5 h-full">
-                    <SpinLog history={history} className="h-full" />
-                </div>
-                <div className="md:col-span-7 h-full">
-                    <StatsChart 
-                        data={history} 
-                        initialBalance={settings.startingBankroll}
-                        className="h-full"
-                        onRunSimulation={handleStartSimulation}
-                        simStatus={simStatus}
-                        onPause={handlePause}
-                        onResume={handleResume}
-                        onStop={handleStop}
-                        speed={speed}
-                        onSpeedChange={setSpeed}
-                        isFullScreen={isGraphFullScreen}
-                        onToggleFullScreen={() => setIsGraphFullScreen(!isGraphFullScreen)}
-                        settings={settings}
-                        onUpdateSettings={setSettings}
-                        strategyConfig={strategyConfig}
-                    />
-                </div>
-            </div>
-        </div>
+             </div>
+        </section>
 
       </div>
     </div>

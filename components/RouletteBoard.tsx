@@ -1,7 +1,8 @@
+// DO NOT WRITE OVER
 import React, { useMemo, useState, useCallback } from 'react';
-import { BetType, BetPlacement, Bet } from '../types';
+import { BetType, BetPlacement, Bet } from '../core/types';
 import { getPlacementIdentifier } from '../utils/placements';
-import { CHIP_COLORS } from '../constants';
+import { CHIP_COLORS } from '../core/constants';
 
 interface RouletteTableProps {
   onBetSelect: (betPlacement: BetPlacement) => void;

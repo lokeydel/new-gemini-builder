@@ -1,5 +1,5 @@
-import React from 'react';
-import { CHIP_VALUES } from '../constants';
+import React, { useState } from 'react';
+import { CHIP_VALUES } from '../core/constants';
 
 interface ChipSelectorProps {
   selectedChip: number;
