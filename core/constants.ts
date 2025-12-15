@@ -1,3 +1,4 @@
+
 // CORE — DO NOT MODIFY WITHOUT INTENT
 import { BetType } from './types';
 
@@ -8,6 +9,14 @@ export const NUMBERS = [
 export const RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
 
 export const FIB_SEQUENCE = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946, 17711];
+
+export const OUTSIDE_BET_TYPES = new Set([
+  BetType.COLUMN_1ST, BetType.COLUMN_2ND, BetType.COLUMN_3RD,
+  BetType.DOZEN_1ST, BetType.DOZEN_2ND, BetType.DOZEN_3RD,
+  BetType.LOW_1_18, BetType.HIGH_19_36,
+  BetType.EVEN, BetType.ODD,
+  BetType.RED, BetType.BLACK
+]);
 
 export const getNumberColor = (num: number | string): 'red' | 'black' | 'green' => {
   if (num === '0' || num === '00' || num === 0 || num === -1) return 'green';

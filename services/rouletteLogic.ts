@@ -1,12 +1,11 @@
-
 import { PlacedBet, SpinResult, BetType, BetPlacement } from '../types';
 import { RED_NUMBERS, PAYOUTS } from '../constants';
 
 export const spinWheel = (): SpinResult => {
   // American Roulette: 1-36, 0, 00 (38 pockets)
-  // We represent 00 as -1 for internal calculation in the new board system
+  // We represent 00 as -1 internally
   const pocketIndex = Math.floor(Math.random() * 38);
-  
+
   let number: number;
   let display: string;
   let color: 'red' | 'black' | 'green';
@@ -25,53 +24,39 @@ export const spinWheel = (): SpinResult => {
     color = RED_NUMBERS.includes(number) ? 'red' : 'black';
   }
 
-  // The result logic uses the display string and color for UI, 
-  // but we return the raw number for win calculation logic
-  return { number: display, color };
+  return { number: display, color }; // separate numeric + display
 };
 
+// Clean winnings calculation
 export const calculateWinnings = (bets: PlacedBet[], result: SpinResult): number => {
   let totalWinnings = 0;
-  
-  // Convert result '00' string back to -1 for matching our logic
-  const resultNum = result.number === '00' ? -1 : Number(result.number);
+  const resultNum = result.number === '00' ? -1 : Number(result.number); // already numeric now
 
   bets.forEach((bet) => {
-    let win = false;
-    
-    // Check if the result number is in the bet's covered numbers
-    if (bet.placement.numbers.includes(resultNum)) {
-      win = true;
-    }
+    const isWin = bet.placement.numbers.includes(resultNum);
 
-    if (win) {
-      // Get payout ratio
+    if (isWin) {
       let payoutRatio = PAYOUTS[bet.placement.type];
-      
-      // Fallback calculation if type not found (Standard Roulette Formula)
+
+      // fallback if type not in PAYOUTS
       if (payoutRatio === undefined) {
-         const count = bet.placement.numbers.length;
-         if (count > 0) {
-            payoutRatio = (36 / count) - 1;
-         } else {
-            payoutRatio = 0;
-         }
+        const count = bet.placement.numbers.length;
+        payoutRatio = count > 0 ? (36 / count - 1) : 0;
       }
 
-      // Return original bet + profit
-      totalWinnings += bet.amount + (bet.amount * payoutRatio);
+      totalWinnings += bet.amount * (1 + payoutRatio); // stake + profit
     }
   });
 
   return totalWinnings;
 };
 
+// Supports basic colors, even/odd, low/high, AND single numbers
 export const parseSequence = (sequenceStr: string): BetPlacement[] => {
   if (!sequenceStr.trim()) return [];
 
   const tokens = sequenceStr.split(',').map(s => s.trim().toLowerCase()).filter(s => s.length > 0);
   const placements: BetPlacement[] = [];
-
   const allNumbers = Array.from({ length: 36 }, (_, i) => i + 1);
 
   for (const token of tokens) {
@@ -82,8 +67,7 @@ export const parseSequence = (sequenceStr: string): BetPlacement[] => {
         placement = { type: BetType.RED, numbers: [...RED_NUMBERS], displayName: 'Red' };
         break;
       case 'black':
-        const blackNumbers = allNumbers.filter(n => !RED_NUMBERS.includes(n));
-        placement = { type: BetType.BLACK, numbers: blackNumbers, displayName: 'Black' };
+        placement = { type: BetType.BLACK, numbers: allNumbers.filter(n => !RED_NUMBERS.includes(n)), displayName: 'Black' };
         break;
       case 'even':
         placement = { type: BetType.EVEN, numbers: allNumbers.filter(n => n % 2 === 0), displayName: 'Even' };
@@ -100,12 +84,18 @@ export const parseSequence = (sequenceStr: string): BetPlacement[] => {
         placement = { type: BetType.HIGH_19_36, numbers: allNumbers.filter(n => n >= 19), displayName: '19 to 36' };
         break;
       default:
-        throw new Error(`Invalid bet in sequence: "${token}". Allowed: red, black, even, odd, 1-18, 19-36`);
+        // Try parsing as a single number bet
+        const num = Number(token);
+        if (!isNaN(num) && (num >= 0 && num <= 36)) {
+          placement = { type: BetType.STRAIGHT_UP, numbers: [num], displayName: num.toString() };
+        } else if (token === '00') {
+          placement = { type: BetType.STRAIGHT_UP, numbers: [-1], displayName: '00' };
+        } else {
+          throw new Error(`Invalid bet in sequence: "${token}". Allowed: red, black, even, odd, low, high, 1-36, 0, 00`);
+        }
     }
 
-    if (placement) {
-      placements.push(placement);
-    }
+    if (placement) placements.push(placement);
   }
 
   return placements;

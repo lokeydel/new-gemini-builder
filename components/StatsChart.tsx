@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceDot, Label } from 'recharts';
 import { SimulationStep, SimulationStatus, SimulationSpeed, SimulationSettings, ProgressionConfig, Lane } from '../core/types';
@@ -134,7 +135,10 @@ const StatsChart: React.FC<StatsChartProps> = ({
   }, [data, initialBalance, activeLanes]);
 
   const range = maxVal - minVal;
-  const padding = range === 0 ? (initialBalance || 100) * 0.1 : range * 0.2;
+  // Dynamic Range Scaling: Minimal padding to ensure the graph touches (or nearly touches) the edges
+  // 1% padding prevents stroke clipping while keeping peaks at the top/bottom
+  const padding = range === 0 ? (initialBalance || 100) * 0.05 : range * 0.01;
+  
   const isAnimating = simStatus === 'RUNNING' || data.length > 100;
 
   // --- CUSTOM AXIS TICKS ---
@@ -156,6 +160,17 @@ const StatsChart: React.FC<StatsChartProps> = ({
               {payload.value}
           </text>
       );
+  };
+  
+  const renderResetDot = (props: any) => {
+      const { cx, cy, payload } = props;
+      const step = payload as SimulationStep;
+      if (step.laneDetails?.some(d => d.wasReset)) {
+          return (
+              <circle cx={cx} cy={cy} r={3} fill="#a855f7" stroke="#ffffff" strokeWidth={1} />
+          );
+      }
+      return null;
   };
   
   // --- MINI VIEW (DEFAULT) ---
@@ -210,7 +225,16 @@ const StatsChart: React.FC<StatsChartProps> = ({
                     {activeLanes.map(lane => (
                         <Area key={lane.id} type="monotone" dataKey={`laneBankrolls.${lane.id}`} stackId="1" stroke={lane.color} fill={`url(#color-${lane.id})`} fillOpacity={1} strokeWidth={1} isAnimationActive={!isAnimating} />
                     ))}
-                    <Area type="monotone" dataKey="bankroll" stroke="#e2e8f0" fill="none" strokeWidth={2} strokeDasharray="5 5" isAnimationActive={!isAnimating} />
+                    <Area 
+                        type="monotone" 
+                        dataKey="bankroll" 
+                        stroke="#e2e8f0" 
+                        fill="none" 
+                        strokeWidth={2} 
+                        strokeDasharray="5 5" 
+                        isAnimationActive={!isAnimating}
+                        dot={renderResetDot}
+                    />
                 </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -356,10 +380,13 @@ const StatsChart: React.FC<StatsChartProps> = ({
                 <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={chartData} margin={{ top: 20, right: 30, left: 10, bottom: 0 }}>
                         <defs>
-                            <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                                <stop offset="95%" stopColor="#10b981" stopOpacity={0.0}/>
-                            </linearGradient>
+                            {/* Lane Gradients */}
+                            {activeLanes.map(lane => (
+                                <linearGradient key={lane.id} id={`fs-gradient-${lane.id}`} x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor={lane.color} stopOpacity={0.6}/>
+                                    <stop offset="95%" stopColor={lane.color} stopOpacity={0.1}/>
+                                </linearGradient>
+                            ))}
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={true} horizontal={true} />
                         <XAxis 
@@ -381,18 +408,36 @@ const StatsChart: React.FC<StatsChartProps> = ({
                         <Tooltip 
                             contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc', borderRadius: '8px' }}
                             itemStyle={{ color: '#10b981' }}
-                            formatter={(value: number) => [`$${value}`, 'Balance']}
+                            formatter={(value: number, name: string) => [`$${value}`, name]}
                             labelFormatter={(label) => `Spin ${label}`}
                         />
                         <ReferenceLine y={initialBalance} stroke="#64748b" strokeDasharray="3 3" />
                         
+                        {/* Stacked Lanes */}
+                        {activeLanes.map(lane => (
+                            <Area 
+                                key={lane.id}
+                                name={lane.name}
+                                type="monotone" 
+                                dataKey={`laneBankrolls.${lane.id}`} 
+                                stackId="1" 
+                                stroke={lane.color} 
+                                fill={`url(#fs-gradient-${lane.id})`}
+                                strokeWidth={1}
+                                isAnimationActive={!isAnimating}
+                            />
+                        ))}
+
+                        {/* Total Bankroll Line Overlay */}
                         <Area 
+                            name="Total Bankroll"
                             type="monotone" 
                             dataKey="bankroll" 
                             stroke="#10b981" 
-                            strokeWidth={2}
-                            fill="url(#chartGradient)" 
+                            strokeWidth={3}
+                            fill="none" 
                             isAnimationActive={!isAnimating}
+                            dot={renderResetDot}
                         />
                         
                         {/* High/Low Markers */}

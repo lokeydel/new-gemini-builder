@@ -1,8 +1,9 @@
 
 import React, { useState } from 'react';
 import { ProgressionConfig, ProgressionAction, SimulationSettings, SimulationSpeed, SimulationStatus, TriggerBet, TriggerRule, BetPlacement, Lane, SavedStrategy, SavedLayout } from '../core/types';
-import { Brain, Save, FolderOpen, Plus, Trash2, Zap, Pencil, RotateCw, Layers, FilePlus, ChevronDown, Folder, X, AlertTriangle, Upload, Link2, ArrowRight, CornerDownLeft, FastForward, Play, ArrowDown, Edit3, Download } from 'lucide-react';
+import { Brain, Save, FolderOpen, Plus, Trash2, Zap, Pencil, RotateCw, Layers, FilePlus, ChevronDown, Folder, X, AlertTriangle, Upload, Link2, ArrowRight, CornerDownLeft, FastForward, Play, ArrowDown, Edit3, Download, Workflow } from 'lucide-react';
 import TriggerSetupModal from './TriggerSetupModal';
+import LogicFlowModal from './LogicFlowModal';
 
 interface StrategyPanelProps {
   // Strategy Management
@@ -74,6 +75,9 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
   // Trigger Modal State
   const [isTriggerModalOpen, setIsTriggerModalOpen] = useState(false);
   const [editingTrigger, setEditingTrigger] = useState<TriggerBet | undefined>(undefined);
+
+  // Logic Flow Modal
+  const [isLogicFlowOpen, setIsLogicFlowOpen] = useState(false);
 
   const handleChangeAction = (type: 'win' | 'loss', value: string) => {
       const action = value as ProgressionAction;
@@ -209,6 +213,16 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
           </div>
 
           <div className="flex items-center gap-1">
+              {/* Logic Flow Button */}
+              <button 
+                onClick={() => setIsLogicFlowOpen(true)} 
+                className="flex items-center gap-1 p-1.5 px-2 mr-2 bg-indigo-900/30 hover:bg-indigo-600 border border-indigo-500/30 text-indigo-200 hover:text-white rounded transition-colors" 
+                title="Visualize Logic Flow"
+              >
+                 <Workflow size={12} />
+                 <span className="text-[10px] font-bold hidden sm:inline">Map</span>
+              </button>
+
               <button onClick={onNewStrategy} disabled={simStatus !== 'IDLE'} className="p-1.5 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors" title="New Strategy"><FilePlus size={14} /></button>
               <button onClick={onSaveStrategy} disabled={simStatus !== 'IDLE'} className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded transition-colors" title="Save Strategy"><Save size={14} /></button>
 
@@ -572,6 +586,13 @@ export const StrategyPanel: React.FC<StrategyPanelProps> = ({
             onSave={handleSaveTrigger}
             existingTrigger={editingTrigger}
             laneColor={activeLane.color}
+        />
+
+        {/* LOGIC FLOW MODAL */}
+        <LogicFlowModal
+            isOpen={isLogicFlowOpen}
+            onClose={() => setIsLogicFlowOpen(false)}
+            lane={activeLane}
         />
 
     </div>

@@ -1,4 +1,5 @@
 
+
 // CORE — DO NOT MODIFY WITHOUT INTENT
 
 export enum BetType {
@@ -37,6 +38,15 @@ export interface PlacedBet {
 // Alias for the component compatibility
 export type Bet = PlacedBet;
 
+export interface EvaluatedBet {
+  laneId: string;
+  laneName: string; // Snapshot of lane name
+  placement: BetPlacement;
+  amount: number;
+  winnings: number; // Payout + Stake returned
+  netProfit: number; // Winnings - Amount
+}
+
 export interface SavedLayout {
   id: string;
   name: string;
@@ -51,13 +61,15 @@ export interface SpinResult {
 export interface SimulationStep {
   spinIndex: number;
   result: SpinResult;
+  startingBankroll: number; // Audit anchor: The balance BEFORE this spin
   betAmount: number;
   outcome: number; // Positive for win, negative for loss
-  bankroll: number; // Global Total
-  laneDetails?: { laneId: string; profit: number; chainIndex?: number }[]; 
+  bankroll: number; // Global Total AFTER this spin
+  laneDetails?: { laneId: string; profit: number; chainIndex?: number; wasReset?: boolean }[]; 
   laneBankrolls: Record<string, number>; // Individual running balance per lane
   activeTriggers?: string[]; // Debug info: which triggers fired this step
-  betDescriptions?: string[]; // Detailed text description of bets placed this spin
+  bets?: EvaluatedBet[]; // Structured bet data
+  betDescriptions?: string[]; // Legacy/Simple descriptions
 }
 
 export enum ProgressionAction {
@@ -112,6 +124,7 @@ export interface SimulationSettings {
   stopLoss: number; // Global Stop Loss
   totalProfitGoal: number; // Global Take Profit
   useTotalProfitGoal: boolean;
+  fixedOutcomeSequence?: string; // New field for Test Mode
 }
 
 export interface BatchStats {

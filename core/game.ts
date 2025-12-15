@@ -1,6 +1,7 @@
+
 // CORE — DO NOT MODIFY WITHOUT INTENT
 import { PlacedBet, SpinResult, BetType, BetPlacement } from './types';
-import { RED_NUMBERS, PAYOUTS } from './constants';
+import { RED_NUMBERS } from './constants';
 
 export const spinWheel = (): SpinResult => {
   // American Roulette: 1-36, 0, 00 (38 pockets)
@@ -27,40 +28,23 @@ export const spinWheel = (): SpinResult => {
   return { number: display, color };
 };
 
-export const calculateWinnings = (bets: PlacedBet[], result: SpinResult): number => {
-  let totalWinnings = 0;
+export const getSpinResult = (val: string | number): SpinResult => {
+  const display = val.toString().trim();
+  const num = display === '00' ? -1 : Number(display);
   
-  // Convert result '00' string back to -1 for matching our logic
-  const resultNum = result.number === '00' ? -1 : Number(result.number);
-
-  bets.forEach((bet) => {
-    let win = false;
-    
-    // Check if the result number is in the bet's covered numbers
-    if (bet.placement.numbers.includes(resultNum)) {
-      win = true;
+  let color: 'red' | 'black' | 'green';
+  
+  if (num === -1 || num === 0) {
+    color = 'green';
+  } else {
+    if (isNaN(num)) {
+      console.warn("Invalid spin input:", val);
+      return { number: '0', color: 'green' };
     }
-
-    if (win) {
-      // Get payout ratio
-      let payoutRatio = PAYOUTS[bet.placement.type];
-      
-      // Fallback calculation if type not found
-      if (payoutRatio === undefined) {
-         const count = bet.placement.numbers.length;
-         if (count > 0) {
-            payoutRatio = (36 / count) - 1;
-         } else {
-            payoutRatio = 0;
-         }
-      }
-
-      // Return original bet + profit
-      totalWinnings += bet.amount + (bet.amount * payoutRatio);
-    }
-  });
-
-  return totalWinnings;
+    color = RED_NUMBERS.includes(num) ? 'red' : 'black';
+  }
+  
+  return { number: display, color };
 };
 
 export const parseSequence = (sequenceStr: string): BetPlacement[] => {

@@ -3,10 +3,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Bet, BetPlacement, ProgressionConfig, ProgressionAction, 
   SimulationSettings, SimulationStep, SimulationSpeed, SimulationStatus, 
-  BatchStats, TriggerBet, SavedLayout, Lane, SavedStrategy, RuntimeLane
+  BatchStats, TriggerBet, SavedLayout, Lane, SavedStrategy, RuntimeLane, EvaluatedBet, SpinResult
 } from './core/types';
-import { spinWheel, parseSequence } from './core/game';
-import { prepareLaneForSpin, updateLaneAfterSpin } from './core/simulation';
+import { spinWheel, parseSequence, getSpinResult } from './core/game';
+import { prepareLaneForSpin, updateLaneAfterSpin, resolveSpin } from './core/simulation';
 import { analyzeSimulationResults, analyzeBatchResults } from './services/geminiService';
 import { getPlacementIdentifier } from './utils/placements';
 import RouletteTable from './components/RouletteBoard';
@@ -14,7 +14,7 @@ import { StrategyPanel } from './components/StrategyPanel';
 import ChipSelector from './components/ChipSelector';
 import StatsChart from './components/StatsChart';
 import SpinLog from './components/SpinLog';
-import { RotateCcw, Trash2, Undo2, Save, Download, Plus, X, Settings, ArrowDownToLine, Eraser, Edit3, Link2 } from 'lucide-react';
+import { RotateCcw, Trash2, Undo2, Save, Download, Plus, X, Settings, ArrowDownToLine, Eraser, Edit3, Link2, FlaskConical } from 'lucide-react';
 
 // Default Config Helper
 const createDefaultConfig = (): ProgressionConfig => ({
@@ -90,7 +90,8 @@ const App: React.FC = () => {
     numberOfSimulations: 1,
     stopLoss: 0, // Unused
     totalProfitGoal: 500,
-    useTotalProfitGoal: false
+    useTotalProfitGoal: false,
+    fixedOutcomeSequence: ''
   });
 
   const [bankroll, setBankroll] = useState(1000);
@@ -143,6 +144,7 @@ const App: React.FC = () => {
   const [batchStats, setBatchStats] = useState<BatchStats | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
   const [isGraphFullScreen, setIsGraphFullScreen] = useState(false);
+  const [isTestPanelOpen, setIsTestPanelOpen] = useState(false);
 
   // Refs
   const simStatusRef = useRef<SimulationStatus>('IDLE');
@@ -182,18 +184,15 @@ const App: React.FC = () => {
 
   // --- Strategy Persistence Functions ---
   const handleSaveStrategy = () => {
-      // CODE NOTE: DONT CHANGE THE STRATEGY SAVE AND NEW SIMULATION SET UP. LEAVE IT AS IS.
-      
-      // 1. Prepare Configuration (for Local Storage - keeps list clean)
+      // IMPORTANT: Include savedLayouts (Favorites) in the strategy file
       const strategyConfig: SavedStrategy = {
           id: Date.now().toString(),
           name: currentStrategyName,
           lanes: lanes,
           settings: settings,
-          savedLayouts: savedLayouts // Save the library of favorites
+          savedLayouts: savedLayouts
       };
 
-      // 2. Prepare Full Export (for File Download - includes spin logs/history)
       const fullExport = {
           ...strategyConfig,
           history: history,
@@ -218,7 +217,6 @@ const App: React.FC = () => {
           setSavedStrategies(prev => [...prev, strategyConfig]);
       }
 
-      // 3. Trigger File Download
       if (proceed) {
           try {
               const blob = new Blob([JSON.stringify(fullExport, null, 2)], { type: 'application/json' });
@@ -242,13 +240,12 @@ const App: React.FC = () => {
       if (simStatus !== 'IDLE') return;
       if (!window.confirm("Load strategy? Unsaved changes will be lost.")) return;
       
-      // Sanitize lanes to ensure new config properties (like chainSteps) exist even if loading old strategy
       const sanitizedLanes = strategy.lanes.map(l => ({
           ...l,
           config: {
-              ...createDefaultConfig(), // Start with defaults
-              ...l.config, // Override with saved values
-              chainSteps: l.config.chainSteps || [] // Explicitly ensure array
+              ...createDefaultConfig(),
+              ...l.config,
+              chainSteps: l.config.chainSteps || []
           }
       }));
       setLanes(sanitizedLanes);
@@ -256,10 +253,8 @@ const App: React.FC = () => {
       if (sanitizedLanes.length > 0) setActiveLaneId(sanitizedLanes[0].id);
       if (strategy.settings) setSettings(prev => ({...prev, ...strategy.settings}));
       
-      // Restore saved layouts if they exist in the strategy
-      if (strategy.savedLayouts) {
-          setSavedLayouts(strategy.savedLayouts);
-      }
+      // Load favorites from strategy, or clear if none (enforcing strict strategy ownership)
+      setSavedLayouts(strategy.savedLayouts || []);
       
       setCurrentStrategyName(strategy.name);
       setHistory([]);
@@ -267,12 +262,10 @@ const App: React.FC = () => {
   };
 
   const handleImportStrategy = (imported: SavedStrategy) => {
-      // Add to saved strategies list
       const exists = savedStrategies.find(s => s.id === imported.id || s.name === imported.name);
       if (!exists) {
           setSavedStrategies(prev => [...prev, imported]);
       }
-      // Load it immediately
       handleLoadStrategy(imported);
   };
 
@@ -299,6 +292,9 @@ const App: React.FC = () => {
       setCurrentStrategyName("New Strategy");
       setHistory([]);
       setBankroll(settings.startingBankroll);
+
+      // Start fresh with no favorites for a new strategy
+      setSavedLayouts([]);
   };
 
   // --- Lane Management ---
@@ -398,14 +394,10 @@ const App: React.FC = () => {
     e?.stopPropagation();
     
     const active = getActiveLane();
-    
-    // Instant save (no prompt) if bets exist
     if (active.bets.length === 0) return;
     
     const nextNum = savedLayouts.length + 1;
     const finalName = `Bet ${nextNum}`;
-    
-    // Deep copy bets to ensure safe storage
     const betsCopy = active.bets.map(b => ({...b}));
 
     setSavedLayouts(prev => [...prev, { 
@@ -417,26 +409,26 @@ const App: React.FC = () => {
 
   const handleLoadLayout = (layout: SavedLayout) => {
     if (simStatus !== 'IDLE') return;
-    // Replace current bets with the saved ones (clone them)
     const newBets = layout.bets.map(b => ({
         ...b,
-        id: Date.now().toString() + Math.random() // New IDs for the board instances
+        id: Date.now().toString() + Math.random() 
     }));
-    
-    updateActiveLane(l => ({ 
-        ...l, 
-        bets: newBets 
-    }));
+    updateActiveLane(l => ({ ...l, bets: newBets }));
   };
   
-  const handleDeleteLayout = (id: string, e: React.MouseEvent) => {
+  const handleDeleteLayout = (e: React.MouseEvent, id: string) => {
+      e.preventDefault();
       e.stopPropagation();
-      if(window.confirm("Delete layout?")) setSavedLayouts(p => p.filter(l => l.id !== id));
+      if (simStatus !== 'IDLE') return;
+      if(window.confirm("Delete this layout?")) {
+        setSavedLayouts(p => p.filter(l => l.id !== id));
+      }
   };
 
   const handleClearAllLayouts = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (simStatus !== 'IDLE') return;
     if (savedLayouts.length === 0) return;
     if (window.confirm("Clear ALL saved favorite layouts? This cannot be undone.")) {
         setSavedLayouts([]);
@@ -444,8 +436,6 @@ const App: React.FC = () => {
   };
 
   // --- SIMULATION ENGINE ---
-  // CODE NOTE: DONT CHANGE THE STRATEGY SAVE AND NEW SIMULATION SET UP. LEAVE IT AS IS.
-
   const waitForSignal = async (signal: AbortSignal) => {
     if (signal.aborted) throw new Error('Aborted');
     while (simStatusRef.current === 'PAUSED') {
@@ -486,8 +476,18 @@ const App: React.FC = () => {
   };
 
   const runInteractiveSimulation = async (signal: AbortSignal) => {
-    const numSims = settings.numberOfSimulations;
-    const spinsPerSim = settings.spinsPerSimulation;
+    // 1. Prepare Fixed Sequence if enabled
+    const sequenceStr = settings.fixedOutcomeSequence || "";
+    // Robust splitting by comma OR whitespace/newlines
+    const fixedOutcomes = sequenceStr
+        .split(/[\s,]+/) 
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+    const isTestMode = fixedOutcomes.length > 0;
+
+    // In Test Mode, we run exactly 1 simulation, and the number of spins equals the sequence length
+    const numSims = isTestMode ? 1 : settings.numberOfSimulations;
+    const spinsPerSim = isTestMode ? fixedOutcomes.length : settings.spinsPerSimulation;
     
     const enabledLanes = lanes.filter(l => l.enabled);
     if (enabledLanes.length === 0) {
@@ -496,8 +496,6 @@ const App: React.FC = () => {
         return;
     }
 
-    // Safety Check for missing bets in Static Mode
-    // MOD: Check if ALL lanes are missing bets. If at least ONE is valid, we run.
     const allLanesMissingBets = enabledLanes.every(l => {
         if (l.config.strategyMode === 'CHAIN') return (l.config.chainSteps || []).length === 0;
         if (l.config.strategyMode === 'STATIC') return l.bets.length === 0 && l.triggerBets.length === 0;
@@ -530,7 +528,6 @@ const App: React.FC = () => {
         for (let s = 0; s < numSims; s++) {
             if (signal.aborted) break;
             
-            // Reset Sim State
             if (isMountedRef.current) {
                 setHistory([]);
                 setBankroll(settings.startingBankroll);
@@ -547,7 +544,6 @@ const App: React.FC = () => {
                 laneRunningBalances[l.id] = startPerLane;
             });
 
-            // Initialize Runtime State
             const runtimeLanes: RuntimeLane[] = enabledLanes.map(l => ({
                 ...l,
                 multiplier: 1,
@@ -555,34 +551,35 @@ const App: React.FC = () => {
                 rotatingIndex: 0,
                 rotatingUnits: 1,
                 sessionProfit: 0,
-                chainIndex: 0 // Start at step 0
+                chainIndex: 0
             }));
 
             for (let i = 0; i < spinsPerSim; i++) {
                 await waitForSignal(signal);
                 
-                // Yield periodically in FAST mode to allow UI interactions (like Stop/Exit Fullscreen) to fire
+                // --- STRICT STOP CHECKS ---
+                // We check BEFORE incrementing spin counter or calculating bets.
+                // If bankroll is exhausted, we stop immediately.
+                if (!isTestMode) {
+                    if (currentBankroll <= 0) break;
+                    if (settings.useTotalProfitGoal && currentBankroll >= settings.startingBankroll + settings.totalProfitGoal) break;
+                }
+
                 if (speedRef.current === 'FAST' && i % 20 === 0) {
                     await new Promise(resolve => setTimeout(resolve, 0));
                 }
 
                 simSpins++;
 
-                if (settings.useTotalProfitGoal && currentBankroll >= settings.startingBankroll + settings.totalProfitGoal) break;
-                if (currentBankroll <= 0) break;
+                // 1. Capture Start Balance BEFORE spin
+                const startBalanceForStep = currentBankroll;
 
                 let totalSpinWager = 0;
                 const laneBetsMap = new Map<string, { bets: Bet[], wager: number }>();
                 const activeTriggersForStep: string[] = [];
                 const stepBetDescriptions: string[] = [];
                 
-                // Temporary store for chainIndex (before update) so we can log it
-                const laneChainIndices: Record<string, number> = {};
-
                 for (let rLane of runtimeLanes) {
-                    // Capture state before processing
-                    laneChainIndices[rLane.id] = rLane.chainIndex;
-                    
                     const { bets, wager, activeTriggers, updatedLaneState } = prepareLaneForSpin(
                         rLane, 
                         settings, 
@@ -595,57 +592,102 @@ const App: React.FC = () => {
                     activeTriggersForStep.push(...activeTriggers);
                     totalSpinWager += wager;
 
-                    // UPDATED: Show ALL bets, do not truncate
                     if (bets.length > 0) {
                         const betSummary = bets.map(b => `${b.placement.displayName} ($${b.amount})`).join(', ');
                         stepBetDescriptions.push(`${rLane.name}: ${betSummary}`);
                     }
                 }
 
-                if (totalSpinWager > currentBankroll) break; 
-               
-                const result = spinWheel();
+                // --- STRICT BANKROLL GUARDRAIL (Per Bet Check) ---
+                if (!isTestMode && totalSpinWager > currentBankroll) {
+                     console.warn(`Bet ($${totalSpinWager}) exceeds bankroll ($${currentBankroll}). Stopping simulation.`);
+                     simHistory.push({
+                        spinIndex: i + 1,
+                        result: { number: 'X', color: 'green' },
+                        startingBankroll: currentBankroll,
+                        betAmount: 0,
+                        outcome: 0,
+                        bankroll: currentBankroll,
+                        laneBankrolls: { ...laneRunningBalances },
+                        activeTriggers: ['SIM STOPPED: Insufficient Funds'],
+                        betDescriptions: ['Bankruptcy Protection: Bet exceeded balance']
+                     });
+                     break; 
+                }
+
+                // --- SPIN ---
+                let result: SpinResult;
+                if (isTestMode) {
+                    if (i >= fixedOutcomes.length) break;
+                    result = getSpinResult(fixedOutcomes[i]);
+                } else {
+                    result = spinWheel();
+                }
                 
-                let globalProfit = 0; // Fixed: Start at 0 because updateLaneAfterSpin returns Net Profit
-                const laneDetails: { laneId: string; profit: number; chainIndex?: number }[] = [];
+                // --- RESOLVE ---
+                // We now aggregate all bets from all lanes to create a global P/L,
+                // but we also track per-lane stats.
+                const globalBets: Bet[] = [];
+                const laneDetails: { laneId: string; profit: number; chainIndex?: number; wasReset?: boolean }[] = [];
+                const allEvaluatedBets: EvaluatedBet[] = [];
+
+                // Flatten all bets for the canonical resolver
+                // Wait, we can't flatten because Lanes track state independently.
+                // We must process lanes individually using updateLaneAfterSpin (which uses resolveSpin internally now).
+                
+                let globalWinnings = 0;
+                let globalWager = 0;
+                let netPL = 0;
 
                 for (let rLane of runtimeLanes) {
                     const data = laneBetsMap.get(rLane.id);
                     if (!data) continue;
 
-                    const { profit, updatedLaneState } = updateLaneAfterSpin(
+                    // Delegate to the STRICT Engine
+                    const { profit, wager, winnings, updatedLaneState, wasReset, evaluatedBets } = updateLaneAfterSpin(
                         rLane,
                         data.bets,
-                        data.wager,
                         result,
                         rLane.config,
-                        lanePrecalc.find(p => p.laneId === rLane.id)?.parsedSequence || []
+                        lanePrecalc.find(p => p.laneId === rLane.id)?.parsedSequence || [],
+                        currentBankroll // Passed for calc only
                     );
 
                     Object.assign(rLane, updatedLaneState);
-                    globalProfit += profit; // Sum of net profits
+                    globalWinnings += winnings;
+                    globalWager += wager;
+                    netPL += profit;
+                    
+                    if (evaluatedBets) {
+                        allEvaluatedBets.push(...evaluatedBets);
+                    }
 
                     laneRunningBalances[rLane.id] = (laneRunningBalances[rLane.id]) + profit;
                     
                     laneDetails.push({ 
                         laneId: rLane.id, 
                         profit: profit, 
-                        chainIndex: rLane.chainIndex // Store the state for the NEXT spin
+                        chainIndex: rLane.chainIndex,
+                        wasReset
                     });
                 }
-
-                currentBankroll += globalProfit;
+                
+                // End Balance = Start Balance + Net P/L
+                // This ensures perfect continuity row-to-row
+                currentBankroll = startBalanceForStep + netPL;
 
                 const step: SimulationStep = {
                     spinIndex: i + 1,
                     result,
-                    betAmount: totalSpinWager,
-                    outcome: globalProfit,
+                    startingBankroll: startBalanceForStep, // Explicit audit trail
+                    betAmount: globalWager,
+                    outcome: netPL,
                     bankroll: currentBankroll,
                     laneDetails,
                     laneBankrolls: { ...laneRunningBalances },
                     activeTriggers: activeTriggersForStep,
-                    betDescriptions: stepBetDescriptions
+                    betDescriptions: stepBetDescriptions,
+                    bets: allEvaluatedBets
                 };
                 
                 simHistory.push(step);
@@ -679,10 +721,15 @@ const App: React.FC = () => {
 
     } catch(e: any) {
         if (e.message !== 'Aborted') {
+            // Check for Insufficient Funds error specifically from resolveSpin
+            if (e.message.includes("Insufficient funds")) {
+                console.warn(e.message);
+                if (isMountedRef.current) setSimStatus('IDLE');
+                return;
+            }
             console.error(e);
             alert("Simulation error: " + e.message);
         }
-        // Force reset IDLE on error to prevent stuck UI
         if (isMountedRef.current) setSimStatus('IDLE');
     }
   };
@@ -709,73 +756,110 @@ const App: React.FC = () => {
 
   // Compact Settings Bar
   const SettingsBar = () => (
-      <div className="flex flex-wrap items-center gap-3 w-full animate-in fade-in slide-in-from-top-4 relative z-10 bg-slate-900/50 p-1.5 rounded-lg border border-slate-800 backdrop-blur-sm">
-          {/* Bankroll */}
-          <div className="flex items-center gap-2 px-2">
-              <span className="text-[10px] uppercase font-bold text-slate-500">Bankroll</span>
-              <div className="flex items-center gap-0.5">
-                  <span className="text-slate-600 text-xs">$</span>
-                  <input type="number" value={settings.startingBankroll}
-                      onChange={(e) => setSettings({ ...settings, startingBankroll: parseInt(e.target.value) || 1000 })}
-                      className="w-16 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
-                  />
+      <div className="flex flex-col w-full relative z-10 bg-slate-900/50 rounded-lg border border-slate-800 backdrop-blur-sm transition-all">
+          <div className="flex flex-wrap items-center gap-3 p-1.5">
+            {/* Bankroll */}
+            <div className="flex items-center gap-2 px-2">
+                <span className="text-[10px] uppercase font-bold text-slate-500">Bankroll</span>
+                <div className="flex items-center gap-0.5">
+                    <span className="text-slate-600 text-xs">$</span>
+                    <input type="number" value={settings.startingBankroll}
+                        onChange={(e) => setSettings({ ...settings, startingBankroll: parseInt(e.target.value) || 1000 })}
+                        className="w-16 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+                    />
+                </div>
+            </div>
+            
+            <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
+
+            {/* Spins */}
+            <div className="flex items-center gap-2 px-2">
+                <span className="text-[10px] uppercase font-bold text-slate-500">Spins</span>
+                <input type="number" value={settings.spinsPerSimulation}
+                    onChange={(e) => setSettings({ ...settings, spinsPerSimulation: parseInt(e.target.value) || 100 })}
+                    className="w-12 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+                />
+            </div>
+
+            <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
+            
+            {/* # Sims */}
+            <div className="flex items-center gap-2 px-2">
+                <span className="text-[10px] uppercase font-bold text-orange-400"># Sims</span>
+                <input type="number" value={settings.numberOfSimulations}
+                    onChange={(e) => setSettings({ ...settings, numberOfSimulations: parseInt(e.target.value) || 1 })}
+                    className="w-12 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
+                />
+            </div>
+            
+            <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
+            
+            {/* Profit Goal */}
+            <div className="flex items-center gap-2 px-2">
+                <div className="flex items-center gap-1.5">
+                    <input type="checkbox" checked={settings.useTotalProfitGoal} onChange={(e) => setSettings({...settings, useTotalProfitGoal: e.target.checked})} className="w-3 h-3 accent-emerald-500 rounded-sm" disabled={simStatus !== 'IDLE'} />
+                    <span className={`text-[10px] uppercase font-bold ${settings.useTotalProfitGoal ? 'text-emerald-400' : 'text-slate-500'}`}>Goal</span>
+                </div>
+                <div className="flex items-center gap-0.5">
+                    <span className={`text-xs ${settings.useTotalProfitGoal ? 'text-slate-600' : 'text-slate-700'}`}>$</span>
+                    <input type="number" value={settings.totalProfitGoal}
+                        onChange={(e) => setSettings({ ...settings, totalProfitGoal: parseInt(e.target.value) || 0 })}
+                        className={`w-14 bg-transparent text-xs font-mono font-bold focus:outline-none text-right ${settings.useTotalProfitGoal ? 'text-white' : 'text-slate-600'}`} disabled={simStatus !== 'IDLE' || !settings.useTotalProfitGoal}
+                    />
+                </div>
+            </div>
+
+            <div className="flex-1"></div>
+
+            {/* Test Toggle Button */}
+            <button 
+                onClick={() => setIsTestPanelOpen(!isTestPanelOpen)}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                    isTestPanelOpen || (settings.fixedOutcomeSequence && settings.fixedOutcomeSequence.length > 0)
+                        ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30' 
+                        : 'bg-slate-800 text-slate-400 hover:text-purple-300 hover:bg-slate-700'
+                }`}
+                title="Open Test Mode (Fixed Outcomes)"
+                disabled={simStatus !== 'IDLE'}
+            >
+                <FlaskConical size={12} />
+                Test
+            </button>
+          </div>
+
+          {/* Test Input Panel */}
+          {(isTestPanelOpen || (settings.fixedOutcomeSequence && settings.fixedOutcomeSequence.length > 0)) && (
+              <div className="p-3 border-t border-slate-700/50 bg-slate-900/80 animate-in slide-in-from-top-2">
+                   <div className="flex items-start gap-3">
+                       <div className="mt-1">
+                           <span className="text-xs font-bold text-purple-400 uppercase tracking-wider block">Fixed Spin Sequence</span>
+                           <span className="text-[9px] text-slate-500 block leading-tight max-w-[150px]">
+                               Simulation will run strictly through these numbers and then stop.
+                           </span>
+                       </div>
+                       <div className="flex-1">
+                           <textarea 
+                               value={settings.fixedOutcomeSequence || ''}
+                               onChange={(e) => setSettings({...settings, fixedOutcomeSequence: e.target.value})}
+                               placeholder="e.g. 10, 6, 17, 11, 0, 00, 36..."
+                               className="w-full h-16 bg-slate-950 border border-slate-700 rounded p-2 text-xs font-mono text-purple-100 placeholder:text-slate-600 focus:border-purple-500 focus:ring-1 focus:ring-purple-500/20 outline-none resize-none"
+                               disabled={simStatus !== 'IDLE'}
+                           />
+                           <div className="flex justify-end gap-2 mt-1">
+                               {settings.fixedOutcomeSequence && (
+                                   <button 
+                                       onClick={() => setSettings({...settings, fixedOutcomeSequence: ''})} 
+                                       className="text-[10px] text-slate-500 hover:text-red-400 flex items-center gap-1"
+                                       disabled={simStatus !== 'IDLE'}
+                                   >
+                                       <Eraser size={10} /> Clear Sequence
+                                   </button>
+                               )}
+                           </div>
+                       </div>
+                   </div>
               </div>
-          </div>
-          
-          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
-
-          {/* Spins */}
-          <div className="flex items-center gap-2 px-2">
-              <span className="text-[10px] uppercase font-bold text-slate-500">Spins</span>
-              <input type="number" value={settings.spinsPerSimulation}
-                  onChange={(e) => setSettings({ ...settings, spinsPerSimulation: parseInt(e.target.value) || 100 })}
-                  className="w-12 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
-              />
-          </div>
-
-          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
-          
-          {/* # Sims */}
-          <div className="flex items-center gap-2 px-2">
-              <span className="text-[10px] uppercase font-bold text-orange-400"># Sims</span>
-               <input type="number" value={settings.numberOfSimulations}
-                  onChange={(e) => setSettings({ ...settings, numberOfSimulations: parseInt(e.target.value) || 1 })}
-                  className="w-12 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
-              />
-          </div>
-          
-          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
-          
-          {/* Profit Goal */}
-          <div className="flex items-center gap-2 px-2">
-              <div className="flex items-center gap-1.5">
-                <input type="checkbox" checked={settings.useTotalProfitGoal} onChange={(e) => setSettings({...settings, useTotalProfitGoal: e.target.checked})} className="w-3 h-3 accent-emerald-500 rounded-sm" disabled={simStatus !== 'IDLE'} />
-                <span className={`text-[10px] uppercase font-bold ${settings.useTotalProfitGoal ? 'text-emerald-400' : 'text-slate-500'}`}>Goal</span>
-              </div>
-              <div className="flex items-center gap-0.5">
-                  <span className={`text-xs ${settings.useTotalProfitGoal ? 'text-slate-600' : 'text-slate-700'}`}>$</span>
-                  <input type="number" value={settings.totalProfitGoal}
-                      onChange={(e) => setSettings({ ...settings, totalProfitGoal: parseInt(e.target.value) || 0 })}
-                      className={`w-14 bg-transparent text-xs font-mono font-bold focus:outline-none text-right ${settings.useTotalProfitGoal ? 'text-white' : 'text-slate-600'}`} disabled={simStatus !== 'IDLE' || !settings.useTotalProfitGoal}
-                  />
-              </div>
-          </div>
-
-          <div className="w-px h-3 bg-slate-700/50 hidden sm:block"></div>
-
-          {/* Table Limits */}
-          <div className="flex items-center gap-2 px-2">
-              <span className="text-[10px] uppercase font-bold text-slate-500">Min</span>
-              <input type="number" value={settings.tableMin}
-                  onChange={(e) => setSettings({ ...settings, tableMin: parseInt(e.target.value) || 1 })}
-                  className="w-10 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
-              />
-              <span className="text-[10px] uppercase font-bold text-slate-500 ml-1">Max</span>
-              <input type="number" value={settings.tableMax}
-                  onChange={(e) => setSettings({ ...settings, tableMax: parseInt(e.target.value) || 1000 })}
-                  className="w-14 bg-transparent text-white text-xs font-mono font-bold focus:outline-none text-right" disabled={simStatus !== 'IDLE'}
-              />
-          </div>
+          )}
       </div>
   );
 
@@ -984,9 +1068,10 @@ const App: React.FC = () => {
                                 <div className="flex items-center gap-1">
                                     {savedLayouts.length > 0 && (
                                         <button 
+                                            type="button"
                                             onClick={handleClearAllLayouts}
                                             disabled={simStatus !== 'IDLE'}
-                                            className="p-1 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded transition-colors"
+                                            className="p-1 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                             title="Clear All Favorites"
                                         >
                                             <Trash2 size={10} />
@@ -1008,7 +1093,13 @@ const App: React.FC = () => {
                                                     <span className="truncate max-w-[80px]">{layout.name}</span>
                                                     <span className="text-[9px] text-slate-500 bg-slate-900 px-1 rounded-full ml-1">${layout.bets.reduce((a,b)=>a+b.amount,0)}</span>
                                                 </button>
-                                                <button onClick={(e) => handleDeleteLayout(layout.id, e)} className="px-1 py-1 text-slate-600 hover:text-red-400 hover:bg-slate-900/50 border-l border-slate-700 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button 
+                                                    type="button"
+                                                    onClick={(e) => handleDeleteLayout(e, layout.id)} 
+                                                    disabled={simStatus !== 'IDLE'}
+                                                    className="px-1.5 py-1 text-slate-500 hover:text-red-400 hover:bg-slate-900/50 border-l border-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                                    title="Delete"
+                                                >
                                                     <X size={10} />
                                                 </button>
                                             </div>
