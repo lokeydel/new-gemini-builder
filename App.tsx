@@ -14,7 +14,8 @@ import { StrategyPanel } from './components/StrategyPanel';
 import ChipSelector from './components/ChipSelector';
 import StatsChart from './components/StatsChart';
 import SpinLog from './components/SpinLog';
-import { RotateCcw, Trash2, Undo2, Save, Download, Plus, X, Settings, ArrowDownToLine, Eraser, Edit3, Link2, FlaskConical } from 'lucide-react';
+import SimulationHistory from './components/SimulationHistory';
+import { RotateCcw, Trash2, Undo2, Save, Download, Plus, X, Settings, ArrowDownToLine, Eraser, Edit3, Link2, FlaskConical, History, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // Default Config Helper
 const createDefaultConfig = (): ProgressionConfig => ({
@@ -118,6 +119,10 @@ const App: React.FC = () => {
   ]);
   const [activeLaneId, setActiveLaneId] = useState<string>('lane-1');
 
+  // --- Chip Interaction State ---
+  const [moveSourceId, setMoveSourceId] = useState<string | null>(null);
+  const [draggingStackId, setDraggingStackId] = useState<string | null>(null);
+
   // --- Strategy Management State ---
   const [currentStrategyName, setCurrentStrategyName] = useState("My Strategy");
   const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>(() => {
@@ -145,9 +150,30 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('roulette_layouts', JSON.stringify(savedLayouts)); }, [savedLayouts]);
   
   // --- Sim State ---
-  const [batches, setBatches] = useState<BatchSession[]>([]);
+  const [batches, setBatches] = useState<BatchSession[]>(() => {
+      try {
+        const saved = localStorage.getItem('roulette_batches');
+        return saved ? JSON.parse(saved) : [];
+      } catch { return []; }
+  });
+
+  // Persist Batches
+  useEffect(() => {
+      try {
+        localStorage.setItem('roulette_batches', JSON.stringify(batches));
+      } catch (e) { console.error("Failed to save batches", e); }
+  }, [batches]);
+
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   
+  // Auto-select last batch on load if none selected
+  useEffect(() => {
+      if (!activeBatchId && batches.length > 0) {
+          setActiveBatchId(batches[batches.length - 1].id);
+      }
+  }, []);
+
   // Derived state for current view with MEMOIZATION to fix Error #185
   const activeBatch = useMemo(() => batches.find(b => b.id === activeBatchId), [batches, activeBatchId]);
   const currentBatchHistories = useMemo(() => activeBatch?.runs || [], [activeBatch]);
@@ -436,6 +462,66 @@ const App: React.FC = () => {
 
   const handleClearBets = () => {
       if (simStatus === 'IDLE') updateActiveLane(l => ({ ...l, bets: [] }));
+  };
+
+  // --- Chips Movement Logic ---
+  const handleStackMove = (from: BetPlacement, to: BetPlacement, moveAll: boolean) => {
+      if (simStatus !== 'IDLE') return;
+      
+      updateActiveLane(lane => {
+          const fromId = getPlacementIdentifier(from);
+          const toId = getPlacementIdentifier(to);
+          
+          if (fromId === toId) return lane;
+
+          const fromBetIndex = lane.bets.findIndex(b => getPlacementIdentifier(b.placement) === fromId);
+          if (fromBetIndex === -1) return lane;
+
+          const fromBet = lane.bets[fromBetIndex];
+          // If moving stack, move all. If moving single, move selected chip amount (capped at total)
+          const amountToMove = moveAll ? fromBet.amount : Math.min(fromBet.amount, selectedChip);
+
+          if (amountToMove <= 0) return lane;
+
+          let newBets = [...lane.bets];
+
+          // 1. Reduce Source
+          if (fromBet.amount <= amountToMove) {
+              newBets = newBets.filter((_, i) => i !== fromBetIndex);
+          } else {
+              newBets[fromBetIndex] = { ...fromBet, amount: fromBet.amount - amountToMove };
+          }
+
+          // 2. Add to Target
+          const toBetIndex = newBets.findIndex(b => getPlacementIdentifier(b.placement) === toId);
+          if (toBetIndex > -1) {
+              newBets[toBetIndex] = { ...newBets[toBetIndex], amount: newBets[toBetIndex].amount + amountToMove };
+          } else {
+               newBets.push({
+                   id: Date.now().toString() + Math.random(),
+                   placement: to,
+                   amount: amountToMove
+               });
+          }
+
+          return { ...lane, bets: newBets };
+      });
+      // Clear move source if it was a click-move
+      setMoveSourceId(null);
+  };
+
+  const handleStackSelectForMove = (placement: BetPlacement | null) => {
+      if (simStatus !== 'IDLE') return;
+      setMoveSourceId(placement ? getPlacementIdentifier(placement) : null);
+  };
+
+  const handleStackDragStart = (placement: BetPlacement, mode: 'single' | 'stack') => {
+      if (simStatus !== 'IDLE') return;
+      setDraggingStackId(getPlacementIdentifier(placement));
+  };
+
+  const handleStackDragEnd = () => {
+      setDraggingStackId(null);
   };
 
   // --- Layout Helpers ---
@@ -852,17 +938,21 @@ const App: React.FC = () => {
       }
   };
 
-  const handleDeleteBatch = () => {
-      const idx = getActiveBatchIndex();
-      if (idx === -1) return;
+  const handleDeleteBatch = (id?: string) => {
+      // id is optional because the StatsChart calls it without ID for "current"
+      const targetId = id || activeBatchId;
+      if (!targetId) return;
       
-      const newBatches = batches.filter(b => b.id !== activeBatchId);
+      const newBatches = batches.filter(b => b.id !== targetId);
       setBatches(newBatches);
       
       if (newBatches.length > 0) {
-          // Try to go to same index (which is now next item) or last item
-          const newIdx = Math.min(idx, newBatches.length - 1);
-          setActiveBatchId(newBatches[newIdx].id);
+          // If we deleted the active one, switch to another
+          if (targetId === activeBatchId) {
+             // Try to stay at same index or go to last
+             const newActive = newBatches[newBatches.length - 1]; // Simple default: go to latest
+             setActiveBatchId(newActive.id);
+          }
       } else {
           setActiveBatchId(null);
           setDisplayHistory([]);
@@ -871,6 +961,13 @@ const App: React.FC = () => {
       setCurrentSimIndex(0);
   };
   
+  const handleClearAllBatches = () => {
+      setBatches([]);
+      setActiveBatchId(null);
+      setDisplayHistory([]);
+      setBankroll(settings.startingBankroll);
+  };
+
   const handleRenameBatch = (batchId: string, newLabel: string) => {
       setBatches(prev => prev.map(b => b.id === batchId ? { ...b, label: newLabel } : b));
   };
@@ -1026,6 +1123,42 @@ const App: React.FC = () => {
                     </div>
                 )}
             </div>
+            
+            {/* History & Nav Controls */}
+            <div className="flex items-center gap-2">
+                 {batches.length > 0 && (
+                     <div className="hidden sm:flex items-center bg-slate-900/50 rounded-lg border border-slate-800 p-0.5">
+                         <button 
+                            onClick={handlePrevBatch} 
+                            disabled={getActiveBatchIndex() <= 0} 
+                            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 rounded hover:bg-slate-800 transition-colors"
+                         >
+                            <ChevronLeft size={16} />
+                         </button>
+                         <span className="px-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider select-none">
+                             {getActiveBatchIndex() + 1} <span className="text-slate-700">/</span> {batches.length}
+                         </span>
+                         <button 
+                            onClick={handleNextBatch} 
+                            disabled={getActiveBatchIndex() >= batches.length - 1} 
+                            className="p-1 text-slate-400 hover:text-white disabled:opacity-30 rounded hover:bg-slate-800 transition-colors"
+                         >
+                            <ChevronRight size={16} />
+                         </button>
+                     </div>
+                 )}
+
+                 <button 
+                     onClick={() => setIsHistoryModalOpen(true)}
+                     className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/10 hover:bg-indigo-600 text-indigo-400 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-bold transition-all shadow-lg"
+                 >
+                     <History size={14} />
+                     <span className="hidden sm:inline">History</span>
+                     {batches.length > 0 && (
+                        <span className="bg-indigo-500 text-white text-[9px] px-1.5 rounded-full ml-0.5">{batches.length}</span>
+                     )}
+                 </button>
+            </div>
         </header>
 
         {/* 1. SETTINGS BAR */}
@@ -1161,6 +1294,13 @@ const App: React.FC = () => {
                             onBetSelect={handleBetSelect}
                             onStackDelete={handleRemoveBet}
                             triggerMode={false}
+                            // New Props for Movement
+                            onStackMove={handleStackMove}
+                            onStackSelectForMove={handleStackSelectForMove}
+                            moveSourceId={moveSourceId}
+                            draggingStackId={draggingStackId}
+                            onStackDragStart={handleStackDragStart}
+                            onStackDragEnd={handleStackDragEnd}
                         />
                         {activeLane.config.strategyMode === 'CHAIN' && (
                              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -1298,7 +1438,8 @@ const App: React.FC = () => {
                     totalBatches={batches.length}
                     onNextBatch={handleNextBatch}
                     onPrevBatch={handlePrevBatch}
-                    onDeleteBatch={handleDeleteBatch}
+                    onDeleteBatch={() => handleDeleteBatch()}
+                    onClearAllBatches={handleClearAllBatches} // Pass clear handler
                     
                     // History List for Dropdown
                     batchList={batchList}
@@ -1307,6 +1448,21 @@ const App: React.FC = () => {
                 />
              </div>
         </section>
+
+        {/* History Modal */}
+        <SimulationHistory 
+            isOpen={isHistoryModalOpen}
+            onClose={() => setIsHistoryModalOpen(false)}
+            batches={batches}
+            activeBatchId={activeBatchId}
+            onSelectBatch={(id) => {
+                setActiveBatchId(id);
+                setCurrentSimIndex(0);
+                setIsHistoryModalOpen(false);
+            }}
+            onDeleteBatch={handleDeleteBatch}
+            onClearHistory={handleClearAllBatches}
+        />
 
       </div>
     </div>

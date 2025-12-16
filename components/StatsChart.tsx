@@ -51,6 +51,7 @@ interface StatsChartProps {
   onNextBatch?: () => void;
   onPrevBatch?: () => void;
   onDeleteBatch?: () => void;
+  onClearAllBatches?: () => void; // New prop for clearing history
   
   // Batch History Dropdown
   batchList?: BatchSummary[];
@@ -83,6 +84,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
   onNextBatch,
   onPrevBatch,
   onDeleteBatch,
+  onClearAllBatches,
   batchList = [],
   onSelectBatch,
   onRenameBatch
@@ -364,6 +366,17 @@ const StatsChart: React.FC<StatsChartProps> = ({
                    )
                })}
            </div>
+           {/* Footer for Clear All */}
+           {onClearAllBatches && batchList.length > 0 && (
+               <div className="p-2 border-t border-slate-800 bg-slate-950/50">
+                   <button 
+                       onClick={(e) => { e.stopPropagation(); onClearAllBatches(); setIsHistoryOpen(false); }}
+                       className="w-full flex items-center justify-center gap-2 py-1.5 text-[10px] font-bold text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded border border-red-900/30 transition-colors uppercase"
+                   >
+                       <Trash2 size={12} /> Clear All History
+                   </button>
+               </div>
+           )}
       </div>
   );
   
