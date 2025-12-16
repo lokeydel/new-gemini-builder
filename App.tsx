@@ -322,8 +322,9 @@ const App: React.FC = () => {
       if (simStatus !== 'IDLE') return;
       if (!window.confirm("Create new strategy? Unsaved changes will be lost.")) return;
       
+      const newId = `lane-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
       setLanes([{
-          id: `lane-${Date.now()}`,
+          id: newId,
           name: 'Lane 1',
           color: LANE_COLORS[0],
           bets: [],
@@ -331,7 +332,7 @@ const App: React.FC = () => {
           config: createDefaultConfig(),
           enabled: true
       }]);
-      setActiveLaneId(`lane-${Date.now()}`); 
+      setActiveLaneId(newId); 
       setCurrentStrategyName("New Strategy");
       setBatches([]);
       setActiveBatchId(null);
@@ -349,9 +350,12 @@ const App: React.FC = () => {
       const nextIndex = lanes.length;
       const color = LANE_COLORS[nextIndex % LANE_COLORS.length];
       
+      // Generate a truly unique ID to prevent React key collision or graph merging issues
+      const newId = `lane-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+
       const newLane: Lane = {
           ...active,
-          id: `lane-${Date.now()}`,
+          id: newId,
           name: `Lane ${nextIndex + 1}`,
           bets: [],
           triggerBets: [],
@@ -559,6 +563,7 @@ const App: React.FC = () => {
         return;
     }
     
+    // Immutable Precalculation of sequences (read-only)
     const lanePrecalc = enabledLanes.map(l => ({
         laneId: l.id,
         parsedSequence: l.config.strategyMode === 'ROTATING' ? parseSequence(l.config.sequence) : []
@@ -589,14 +594,16 @@ const App: React.FC = () => {
             let simHistory: SimulationStep[] = [];
             let historyBuffer: SimulationStep[] = [];
 
-            let laneRunningBalances: Record<string, number> = {};
-            // Initialize each lane with the FULL starting bankroll for comparison
+            // Initialize Balances (Immutable Map)
+            const laneRunningBalances: Record<string, number> = {};
             const startPerLane = settings.startingBankroll; 
             enabledLanes.forEach(l => {
                 laneRunningBalances[l.id] = startPerLane;
             });
 
-            const runtimeLanes: RuntimeLane[] = enabledLanes.map(l => ({
+            // Initialize Runtime State (Immutable Array)
+            // We use 'let' because we will replace this array entirely on every spin to ensure strict immutability.
+            let currentRuntimeLanes: RuntimeLane[] = enabledLanes.map(l => ({
                 ...l,
                 multiplier: 1,
                 progressionIndex: 0,
@@ -610,8 +617,6 @@ const App: React.FC = () => {
                 await waitForSignal(signal);
                 
                 // --- STRICT STOP CHECKS ---
-                // We check BEFORE incrementing spin counter or calculating bets.
-                // If bankroll is exhausted, we stop immediately.
                 if (!isTestMode) {
                     if (currentBankroll <= 0) break;
                     if (settings.useTotalProfitGoal && currentBankroll >= settings.startingBankroll + settings.totalProfitGoal) break;
@@ -623,52 +628,46 @@ const App: React.FC = () => {
 
                 simSpins++;
 
-                // 1. Capture Start Balance BEFORE spin
+                // Capture Start Balance BEFORE spin
                 const startBalanceForStep = currentBankroll;
 
-                let totalSpinWager = 0;
-                const laneBetsMap = new Map<string, { bets: Bet[], wager: number }>();
-                const activeTriggersForStep: string[] = [];
-                const stepBetDescriptions: string[] = [];
-                
-                for (let rLane of runtimeLanes) {
-                    const { bets, wager, activeTriggers, updatedLaneState } = prepareLaneForSpin(
-                        rLane, 
+                // --- PHASE 1: PREPARE & WAGER ---
+                // We map current lanes to prepared data, keeping everything immutable.
+                const preparedStepData = currentRuntimeLanes.map(lane => {
+                   return prepareLaneForSpin(
+                        lane, 
                         settings, 
                         simHistory, 
-                        lanePrecalc.find(p => p.laneId === rLane.id)?.parsedSequence || []
-                    );
-                    
-                    Object.assign(rLane, updatedLaneState);
-                    laneBetsMap.set(rLane.id, { bets, wager });
-                    activeTriggersForStep.push(...activeTriggers);
-                    totalSpinWager += wager;
+                        lanePrecalc.find(p => p.laneId === lane.id)?.parsedSequence || []
+                   );
+                });
 
-                    if (bets.length > 0) {
-                        const betSummary = bets.map(b => `${b.placement.displayName} ($${b.amount})`).join(', ');
-                        stepBetDescriptions.push(`${rLane.name}: ${betSummary}`);
-                    }
-                }
+                // Calculate total wager from all lanes
+                const totalSpinWager = preparedStepData.reduce((sum, d) => sum + d.wager, 0);
+                
+                // Aggregate debug info
+                const activeTriggersForStep = preparedStepData.flatMap(d => d.activeTriggers);
+                const stepBetDescriptions = preparedStepData
+                    .filter(d => d.bets.length > 0)
+                    .map(d => `${d.updatedLaneState.name}: ${d.bets.map(b => `${b.placement.displayName} ($${b.amount})`).join(', ')}`);
 
-                // --- STRICT BANKROLL GUARDRAIL (Per Bet Check) ---
+                // --- STRICT BANKROLL GUARDRAIL ---
                 if (!isTestMode && totalSpinWager > currentBankroll) {
                      console.warn(`Bet ($${totalSpinWager}) exceeds bankroll ($${currentBankroll}). Stopping simulation.`);
                      
-                     // Force close simulation run as a loss/stop
                      simHistory.push({
                         spinIndex: i + 1,
                         result: { value: 0, display: 'X', color: 'green' },
                         startingBankroll: currentBankroll,
-                        betAmount: 0, // No bet placed as we couldn't afford it
+                        betAmount: 0, 
                         outcome: 0,
-                        bankroll: currentBankroll, // Balance preserved
+                        bankroll: currentBankroll,
                         laneBankrolls: { ...laneRunningBalances },
                         activeTriggers: ['SIM STOPPED: Insufficient Funds'],
                         betDescriptions: ['Bankruptcy Protection: Bet exceeded balance'],
                         laneDetails: []
                      });
                      
-                     // Update UI immediately for this final step
                      if (isMountedRef.current) {
                          setDisplayHistory(prev => [...prev, ...historyBuffer, simHistory[simHistory.length - 1]]);
                          setBankroll(currentBankroll);
@@ -685,73 +684,74 @@ const App: React.FC = () => {
                     result = spinWheel();
                 }
                 
-                // --- RESOLVE ---
-                // We now aggregate all bets from all lanes to create a global P/L,
-                // but we also track per-lane stats.
+                // --- PHASE 2: RESOLVE & UPDATE ---
+                // Use the state returned by prepare (because prepare might have reset session profits, etc.)
+                const nextRuntimeLanes: RuntimeLane[] = [];
                 const laneLogDetails: LaneLogDetail[] = [];
                 const allEvaluatedBets: EvaluatedBet[] = [];
-
-                let globalWager = 0;
                 let netPL = 0;
+                let globalWagerConfirmed = 0;
 
-                for (let rLane of runtimeLanes) {
-                    const data = laneBetsMap.get(rLane.id);
-                    if (!data) continue;
+                // Iterate over the PREPARED data to resolve outcomes
+                // This ensures we are using the exact state that placed the bets.
+                preparedStepData.forEach((prepData, idx) => {
+                    const laneStateAfterPrepare = prepData.updatedLaneState;
+                    const betsPlaced = prepData.bets;
 
-                    // Capture balance BEFORE outcome
-                    const laneBalanceBefore = laneRunningBalances[rLane.id];
+                    const balanceBefore = laneRunningBalances[laneStateAfterPrepare.id];
 
-                    // Delegate to the STRICT Engine
-                    // PASS Number.MAX_SAFE_INTEGER as virtual balance to avoid internal errors since we handled global bankroll above
-                    const { profit, wager, updatedLaneState, wasReset, evaluatedBets, progressionLabel } = updateLaneAfterSpin(
-                        rLane,
-                        data.bets,
+                    // Resolve
+                    const updateResult = updateLaneAfterSpin(
+                        laneStateAfterPrepare,
+                        betsPlaced,
                         result,
-                        rLane.config,
-                        lanePrecalc.find(p => p.laneId === rLane.id)?.parsedSequence || [],
-                        Number.MAX_SAFE_INTEGER 
+                        laneStateAfterPrepare.config,
+                        lanePrecalc.find(p => p.laneId === laneStateAfterPrepare.id)?.parsedSequence || [],
+                        Number.MAX_SAFE_INTEGER // Virtual check only, global check done above
                     );
 
-                    Object.assign(rLane, updatedLaneState);
-                    globalWager += wager;
-                    netPL += profit;
+                    // Collect Immutable Result Data
+                    nextRuntimeLanes.push(updateResult.updatedLaneState);
                     
-                    if (evaluatedBets) {
-                        allEvaluatedBets.push(...evaluatedBets);
+                    if (updateResult.evaluatedBets) {
+                        allEvaluatedBets.push(...updateResult.evaluatedBets);
                     }
-
-                    const laneBalanceAfter = laneBalanceBefore + profit;
-                    laneRunningBalances[rLane.id] = laneBalanceAfter;
                     
+                    globalWagerConfirmed += updateResult.wager;
+                    netPL += updateResult.profit;
+
+                    // Update local balance map
+                    const balanceAfter = balanceBefore + updateResult.profit;
+                    laneRunningBalances[laneStateAfterPrepare.id] = balanceAfter;
+
                     laneLogDetails.push({ 
-                        laneId: rLane.id,
-                        laneName: rLane.name,
-                        wager: wager,
-                        profit: profit,
-                        balanceBefore: laneBalanceBefore,
-                        balanceAfter: laneBalanceAfter,
-                        progressionLabel: progressionLabel,
-                        wasReset
+                        laneId: laneStateAfterPrepare.id,
+                        laneName: laneStateAfterPrepare.name,
+                        wager: updateResult.wager,
+                        profit: updateResult.profit,
+                        balanceBefore: balanceBefore,
+                        balanceAfter: balanceAfter,
+                        progressionLabel: updateResult.progressionLabel,
+                        wasReset: updateResult.wasReset
                     });
-                }
-                
-                // End Balance = Start Balance + Net P/L
-                // This ensures perfect continuity row-to-row
-                // If Net P/L leads to < 0, mathematically it shouldn't because totalWager <= currentBankroll
+                });
+
+                // UPDATE STATE POINTER FOR NEXT LOOP (Immutable Replacement)
+                currentRuntimeLanes = nextRuntimeLanes;
+
+                // Finalize Step Data
                 currentBankroll = startBalanceForStep + netPL;
-                
-                // Absolute Safety Clamp - No negative numbers EVER
                 if (currentBankroll < 0) currentBankroll = 0;
 
                 const step: SimulationStep = {
                     spinIndex: i + 1,
                     result,
-                    startingBankroll: startBalanceForStep, // Explicit audit trail
-                    betAmount: globalWager,
+                    startingBankroll: startBalanceForStep, 
+                    betAmount: globalWagerConfirmed,
                     outcome: netPL,
                     bankroll: currentBankroll,
                     laneDetails: laneLogDetails,
-                    laneBankrolls: { ...laneRunningBalances },
+                    laneBankrolls: { ...laneRunningBalances }, // Snapshot copy
                     activeTriggers: activeTriggersForStep,
                     betDescriptions: stepBetDescriptions,
                     bets: allEvaluatedBets
@@ -1266,7 +1266,7 @@ const App: React.FC = () => {
         {/* 4. CHARTS / LOGS */}
         <section className="grid grid-cols-1 md:grid-cols-12 gap-2">
              <div className="md:col-span-4 h-[280px]">
-                <SpinLog history={displayHistory} lanes={lanes} activeLaneId={activeLaneId} className="h-full" />
+                <SpinLog history={displayHistory} lanes={lanes} activeLaneId={activeLaneId} className="h-full" batchLabel={activeBatch?.label || (batches.length > 0 ? `Batch ${getActiveBatchIndex()+1}` : undefined)} />
              </div>
              <div className="md:col-span-8 h-[280px]">
                 <StatsChart 

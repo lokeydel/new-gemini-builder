@@ -327,10 +327,49 @@ const StatsChart: React.FC<StatsChartProps> = ({
       }
       return null;
   };
+
+  // --- BATCH LIST RENDERER (Shared) ---
+  const renderBatchList = () => (
+      <div className="absolute top-full left-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden flex flex-col max-h-[300px] animate-in slide-in-from-top-2">
+           <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+               <History size={12} /> Saved Batches
+           </div>
+           <div className="overflow-y-auto custom-scrollbar flex-1">
+               {batchList.slice().reverse().map((b, revIdx) => {
+                   const actualIndex = batchList.length - 1 - revIdx;
+                   const isActive = actualIndex === currentBatchIndex;
+                   return (
+                       <button 
+                           key={b.id}
+                           onClick={(e) => { e.stopPropagation(); onSelectBatch?.(actualIndex); setIsHistoryOpen(false); }}
+                           className={`w-full text-left px-3 py-2 border-b border-slate-800 hover:bg-slate-800 transition-colors flex items-center justify-between group ${isActive ? 'bg-slate-800/50' : ''}`}
+                       >
+                           <div className="flex-1 min-w-0 pr-2">
+                               <div className={`text-xs font-bold truncate ${isActive ? 'text-indigo-300' : 'text-slate-300'}`}>
+                                   {b.label}
+                               </div>
+                               <div className="text-[10px] text-slate-500">
+                                   {new Date(b.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                               </div>
+                           </div>
+                           <div className="text-right shrink-0">
+                               <div className={`text-xs font-bold font-mono ${b.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                   {b.netProfit >= 0 ? '+' : ''}{b.netProfit.toFixed(0)}
+                               </div>
+                               <div className="text-[9px] text-slate-500">
+                                   Win Rate {(b.winRate * 100).toFixed(0)}%
+                               </div>
+                           </div>
+                       </button>
+                   )
+               })}
+           </div>
+      </div>
+  );
   
   // --- MINI VIEW (DEFAULT) ---
   if (!isFullScreen) {
-      if (data.length === 0) return (
+      if (data.length === 0 && totalBatches === 0) return (
         <div className={`flex flex-col items-center justify-center gap-3 text-slate-500 border border-dashed border-slate-700 rounded-xl bg-black ${className || 'h-72'}`}>
           <span className="italic">No simulation data available.</span>
           <div className="flex gap-4 items-center mt-2">
@@ -357,17 +396,41 @@ const StatsChart: React.FC<StatsChartProps> = ({
           <div className="absolute top-0 left-0 right-0 p-3 flex items-start justify-between z-20 pointer-events-none">
              
              {/* Title with backdrop & Navigation */}
-             <div className="bg-black/40 backdrop-blur-sm px-2 py-1 rounded border border-slate-800/50 pointer-events-auto flex items-center gap-2">
-                 {totalBatches > 1 ? (
-                    <>
-                        <button onClick={(e) => { e.stopPropagation(); onPrevBatch?.(); }} disabled={currentBatchIndex === 0} className="text-slate-400 hover:text-white disabled:opacity-30"><ChevronLeft size={12} /></button>
-                        <span className="font-semibold text-slate-300 text-xs uppercase tracking-wider">
-                           {currentBatch?.label || `Batch ${currentBatchIndex + 1}`} <span className="text-slate-500">/ {totalBatches}</span>
-                        </span>
-                        <button onClick={(e) => { e.stopPropagation(); onNextBatch?.(); }} disabled={currentBatchIndex === totalBatches - 1} className="text-slate-400 hover:text-white disabled:opacity-30"><ChevronRight size={12} /></button>
-                    </>
-                 ) : (
-                    <h3 className="font-semibold text-slate-300 text-xs uppercase tracking-wider">Progression Lines</h3>
+             <div className="pointer-events-auto relative">
+                 <div className="bg-black/80 backdrop-blur-sm px-2 py-1 rounded border border-slate-800/50 flex items-center gap-2 shadow-lg">
+                     {totalBatches > 0 ? (
+                        <>
+                            <button onClick={(e) => { e.stopPropagation(); onPrevBatch?.(); }} disabled={currentBatchIndex === 0} className="text-slate-400 hover:text-white disabled:opacity-30 p-1 hover:bg-slate-800 rounded transition-colors"><ChevronLeft size={12} /></button>
+                            
+                            <button 
+                                onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+                                className="flex items-center gap-1 font-semibold text-slate-300 text-xs uppercase tracking-wider hover:text-indigo-400 transition-colors px-1"
+                            >
+                                {currentBatch?.label || `Batch ${currentBatchIndex + 1}`} 
+                                <span className="text-slate-500 font-normal">/ {totalBatches}</span>
+                                <ChevronDown size={10} className={`transition-transform ${isHistoryOpen ? 'rotate-180' : ''}`} />
+                            </button>
+
+                            <button onClick={(e) => { e.stopPropagation(); onNextBatch?.(); }} disabled={currentBatchIndex === totalBatches - 1} className="text-slate-400 hover:text-white disabled:opacity-30 p-1 hover:bg-slate-800 rounded transition-colors"><ChevronRight size={12} /></button>
+                            
+                            {/* Mini Delete Button for Quick cleanup */}
+                            {onDeleteBatch && (
+                                <button onClick={(e) => { e.stopPropagation(); onDeleteBatch(); }} className="ml-1 text-slate-600 hover:text-red-400 p-1 hover:bg-slate-800 rounded transition-colors" title="Delete Batch">
+                                    <Trash2 size={10} />
+                                </button>
+                            )}
+                        </>
+                     ) : (
+                        <h3 className="font-semibold text-slate-300 text-xs uppercase tracking-wider">Progression Lines</h3>
+                     )}
+                 </div>
+                 
+                 {/* DROPDOWN MENU FOR MINI VIEW */}
+                 {isHistoryOpen && (
+                     <>
+                        <div className="fixed inset-0 z-40" onClick={() => setIsHistoryOpen(false)} />
+                        {renderBatchList()}
+                     </>
                  )}
              </div>
              
@@ -413,18 +476,19 @@ const StatsChart: React.FC<StatsChartProps> = ({
                     <defs>
                         {activeLanes.map(lane => (
                             <linearGradient key={lane.id} id={`color-${lane.id}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor={lane.color} stopOpacity={0.15}/>
-                                <stop offset="95%" stopColor={lane.color} stopOpacity={0.05}/>
+                                <stop offset="0%" stopColor={lane.color} stopOpacity={0.15}/>
+                                <stop offset="100%" stopColor={lane.color} stopOpacity={0.15}/>
                             </linearGradient>
                         ))}
+                        
                         {/* Split Gradient for Total Bankroll with fading to black/transparent at the zero line */}
                         <linearGradient id="splitColor" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#22c55e" stopOpacity={0.7} /> {/* Peak: Vibrant Green */}
-                          <stop offset={off} stopColor="#22c55e" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
-                          <stop offset={off} stopColor="#ef4444" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
-                          <stop offset="100%" stopColor="#ef4444" stopOpacity={0.7} /> {/* Bottom: Vibrant Red */}
+                          <stop offset="0%" stopColor="#22c55e" stopOpacity={0.8} /> {/* Peak: Vibrant Green */}
+                          <stop offset={off} stopColor="#22c55e" stopOpacity={0.8} /> {/* Middle: Near Transparent */}
+                          <stop offset={off} stopColor="#ef4444" stopOpacity={0.8} /> {/* Middle: Near Transparent */}
+                          <stop offset="100%" stopColor="#ef4444" stopOpacity={0.8} /> {/* Bottom: Vibrant Red */}
                         </linearGradient>
-                        
+
                         {/* Split Stroke Gradient */}
                         <linearGradient id="splitStroke" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor="#4ade80" stopOpacity={1} /> {/* Green-400 */}
@@ -437,8 +501,8 @@ const StatsChart: React.FC<StatsChartProps> = ({
                     <YAxis domain={[minVal - padding, maxVal + padding]} hide />
                     <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#64748b', strokeWidth: 1, strokeDasharray: '4 4' }} />
                     <ReferenceLine y={initialBalance} stroke="#94a3b8" strokeDasharray="3 3" />
-                    {/* Independent Lanes */}
-                    {activeLanes.map(lane => (
+                    {/* Independent Lanes - Hidden if only 1 lane active */}
+                    {activeLanes.length > 1 && activeLanes.map(lane => (
                         <Area 
                             key={lane.id} 
                             type="monotone" 
@@ -451,7 +515,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                             animationDuration={0}
                         />
                     ))}
-                    {/* Main Bankroll Area with Fading Gradient */}
+                    {/* Main Bankroll Area with Transparent Fill */}
                     <Area 
                         type="monotone" 
                         dataKey="bankroll" 
@@ -580,42 +644,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                    {isHistoryOpen && (
                        <>
                            <div className="fixed inset-0 z-40" onClick={() => setIsHistoryOpen(false)} />
-                           <div className="absolute top-full left-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden flex flex-col max-h-[300px]">
-                               <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                                   <History size={12} /> Simulation History
-                               </div>
-                               <div className="overflow-y-auto custom-scrollbar flex-1">
-                                   {batchList.slice().reverse().map((b, revIdx) => {
-                                       // Reverse index calculation
-                                       const actualIndex = batchList.length - 1 - revIdx;
-                                       const isActive = actualIndex === currentBatchIndex;
-                                       return (
-                                           <button 
-                                               key={b.id}
-                                               onClick={() => { onSelectBatch?.(actualIndex); setIsHistoryOpen(false); }}
-                                               className={`w-full text-left px-3 py-2 border-b border-slate-800 hover:bg-slate-800 transition-colors flex items-center justify-between group ${isActive ? 'bg-slate-800/50' : ''}`}
-                                           >
-                                               <div className="flex-1 min-w-0 pr-2">
-                                                   <div className={`text-xs font-bold truncate ${isActive ? 'text-indigo-300' : 'text-slate-300'}`}>
-                                                       {b.label}
-                                                   </div>
-                                                   <div className="text-[10px] text-slate-500">
-                                                       {new Date(b.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
-                                                   </div>
-                                               </div>
-                                               <div className="text-right shrink-0">
-                                                   <div className={`text-xs font-bold font-mono ${b.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                                       {b.netProfit >= 0 ? '+' : ''}{b.netProfit.toFixed(0)}
-                                                   </div>
-                                                   <div className="text-[9px] text-slate-500">
-                                                       Win Rate {(b.winRate * 100).toFixed(0)}%
-                                                   </div>
-                                               </div>
-                                           </button>
-                                       )
-                                   })}
-                               </div>
-                           </div>
+                           {renderBatchList()}
                        </>
                    )}
                </div>
@@ -759,25 +788,26 @@ const StatsChart: React.FC<StatsChartProps> = ({
                             {/* Lane Gradients */}
                             {activeLanes.map(lane => (
                                 <linearGradient key={lane.id} id={`fs-gradient-${lane.id}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor={lane.color} stopOpacity={0.3}/>
-                                    <stop offset="95%" stopColor={lane.color} stopOpacity={0.05}/>
+                                    <stop offset="0%" stopColor={lane.color} stopOpacity={0.15}/>
+                                    <stop offset="100%" stopColor={lane.color} stopOpacity={0.15}/>
                                 </linearGradient>
                             ))}
+                            
                             {/* Split Gradient for Total Bankroll with fading to black/transparent at the zero line */}
                             <linearGradient id="fs-splitColor" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor="#22c55e" stopOpacity={0.9} /> {/* Peak: Vibrant Green */}
-                              <stop offset={off} stopColor="#22c55e" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
-                              <stop offset={off} stopColor="#ef4444" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
-                              <stop offset="100%" stopColor="#ef4444" stopOpacity={0.9} /> {/* Bottom: Vibrant Red */}
+                              <stop offset="0%" stopColor="#22c55e" stopOpacity={0.8} /> {/* Peak: Vibrant Green */}
+                              <stop offset={off} stopColor="#22c55e" stopOpacity={0.8} /> {/* Middle: Near Transparent */}
+                              <stop offset={off} stopColor="#ef4444" stopOpacity={0.8} /> {/* Middle: Near Transparent */}
+                              <stop offset="100%" stopColor="#ef4444" stopOpacity={0.8} /> {/* Bottom: Vibrant Red */}
                             </linearGradient>
-                            
+
                             {/* Split Stroke Gradient */}
                             <linearGradient id="fs-splitStroke" x1="0" y1="0" x2="0" y2="1">
                               <stop offset="0%" stopColor="#4ade80" stopOpacity={1} /> {/* Green-400 */}
                               <stop offset={off} stopColor="#4ade80" stopOpacity={1} />
                               <stop offset={off} stopColor="#f87171" stopOpacity={1} /> {/* Red-400 */}
                               <stop offset="100%" stopColor="#f87171" stopOpacity={1} />
-                            </linearGradient>
+                        </linearGradient>
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={true} horizontal={true} />
                         <XAxis 
@@ -799,8 +829,8 @@ const StatsChart: React.FC<StatsChartProps> = ({
                         <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#64748b', strokeWidth: 1, strokeDasharray: '4 4' }} />
                         <ReferenceLine y={initialBalance} stroke="#64748b" strokeDasharray="3 3" />
                         
-                        {/* Stacked Lanes - No StackId */}
-                        {activeLanes.map(lane => (
+                        {/* Stacked Lanes - No StackId - Hidden if only 1 lane active */}
+                        {activeLanes.length > 1 && activeLanes.map(lane => (
                             <Area 
                                 key={lane.id}
                                 name={lane.name}
@@ -854,7 +884,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                       <button 
                         onClick={(e) => { e.stopPropagation(); onPrevSim?.(); }} 
                         disabled={!onPrevSim || currentSimIndex === 0}
-                        className="flex items-center gap-1 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                        className="flex items-center gap-1 text-yellow-500 hover:text-yellow-400 disabled:opacity-30 disabled:cursor-not-allowed"
                       >
                         <ChevronDown size={14} className="rotate-90" /> PREV
                       </button>
@@ -867,7 +897,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                       <button 
                         onClick={(e) => { e.stopPropagation(); onNextSim?.(); }} 
                         disabled={!onNextSim || (currentSimIndex !== undefined && totalSims !== undefined && currentSimIndex >= totalSims - 1)}
-                        className="flex items-center gap-1 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                        className="flex items-center gap-1 text-yellow-500 hover:text-yellow-400 disabled:opacity-30 disabled:cursor-not-allowed"
                       >
                         NEXT <ChevronDown size={14} className="-rotate-90" />
                       </button>

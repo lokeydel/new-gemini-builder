@@ -1,17 +1,18 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { SimulationStep, Lane } from '../core/types';
 import { getNumberColor } from '../core/constants';
-import { History, Maximize2, Minimize2, Download, ArrowLeft, CornerDownRight, AlertTriangle } from 'lucide-react';
+import { History, Maximize2, Minimize2, Download, ArrowLeft, CornerDownRight, AlertTriangle, Calculator, TrendingUp, PieChart, Wallet } from 'lucide-react';
 
 interface SpinLogProps {
   history: SimulationStep[];
   lanes: Lane[];
   activeLaneId?: string; // Optional prop to default or highlight active lane
   className?: string;
+  batchLabel?: string;
 }
 
-const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, activeLaneId, className }) => {
+const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, activeLaneId, className, batchLabel }) => {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [expandedSpinIndex, setExpandedSpinIndex] = useState<number | null>(null);
   
@@ -68,6 +69,50 @@ const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, activeLaneId, classNa
       link.click();
       document.body.removeChild(link);
   };
+  
+  // --- STATS CALCULATION ---
+  const stats = useMemo(() => {
+    if (history.length === 0) return null;
+
+    let wins = 0, losses = 0, pushes = 0;
+    let netPL = 0;
+    let totalWagered = 0;
+    let red = 0, black = 0, green = 0;
+    const laneProfits: Record<string, number> = {};
+
+    history.forEach(step => {
+        if (step.outcome > 0) wins++;
+        else if (step.outcome < 0) losses++;
+        else pushes++;
+
+        netPL += step.outcome;
+        totalWagered += step.betAmount;
+
+        if (step.result.color === 'red') red++;
+        else if (step.result.color === 'black') black++;
+        else green++;
+        
+        if (step.laneDetails) {
+            step.laneDetails.forEach(d => {
+                laneProfits[d.laneId] = (laneProfits[d.laneId] || 0) + d.profit;
+            });
+        }
+    });
+
+    const totalSpins = history.length;
+    return {
+        spins: totalSpins,
+        wins, losses, pushes,
+        netPL,
+        totalWagered,
+        roi: totalWagered > 0 ? (netPL / totalWagered) * 100 : 0,
+        red, black, green,
+        redPct: totalSpins > 0 ? (red / totalSpins) * 100 : 0,
+        blackPct: totalSpins > 0 ? (black / totalSpins) * 100 : 0,
+        greenPct: totalSpins > 0 ? (green / totalSpins) * 100 : 0,
+        laneProfits
+    };
+  }, [history]);
 
   // Helper to format the Lane Delta string: "L1-2(Fib0)/L2+5(reset)"
   const getLaneDeltaString = (step: SimulationStep) => {
@@ -128,9 +173,14 @@ const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, activeLaneId, classNa
 
             <div className="flex items-center gap-2">
                 {!isFullScreen && <History size={16} className="text-indigo-400" />}
-                <h3 className={`font-bold text-slate-300 uppercase tracking-wider ${isFullScreen ? 'text-lg' : 'text-sm'}`}>
-                    Spin Log
-                </h3>
+                <div className="flex flex-col">
+                    <h3 className={`font-bold text-slate-300 uppercase tracking-wider ${isFullScreen ? 'text-lg' : 'text-sm'}`}>
+                        Spin Log
+                    </h3>
+                    {batchLabel && (
+                        <span className="text-[10px] text-slate-500 font-mono -mt-0.5">{batchLabel}</span>
+                    )}
+                </div>
             </div>
          </div>
 
@@ -146,9 +196,9 @@ const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, activeLaneId, classNa
             {isFullScreen ? (
                 <button
                     onClick={() => setIsFullScreen(false)}
-                    className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-all"
+                    className="flex items-center gap-2 px-4 py-1.5 bg-red-900/40 hover:bg-red-600 text-red-200 hover:text-white border border-red-500/30 hover:border-red-400 rounded-lg transition-all text-xs font-bold"
                 >
-                    <Minimize2 size={18} />
+                    <Minimize2 size={14} /> EXIT FULL SCREEN
                 </button>
             ) : (
                 <button
@@ -312,6 +362,97 @@ const SpinLog: React.FC<SpinLogProps> = ({ history, lanes, activeLaneId, classNa
             </tbody>
         </table>
       </div>
+
+      {/* STATISTICS FOOTER */}
+      {stats && (
+          <div className="bg-slate-950 border-t border-slate-700 shrink-0 shadow-[0_-4px_10px_rgba(0,0,0,0.2)] relative z-20">
+              <div className={`grid ${isFullScreen ? 'grid-cols-4' : 'grid-cols-2 md:grid-cols-4'} divide-x divide-slate-800`}>
+                  
+                  {/* COL 1: Performance */}
+                  <div className="p-3 flex flex-col justify-center gap-2">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
+                          <TrendingUp size={12} className="text-indigo-400" /> Performance
+                      </div>
+                      <div className="flex justify-between items-end">
+                          <span className="text-[10px] text-slate-500 uppercase">Net P/L</span>
+                          <span className={`font-mono text-sm font-bold ${stats.netPL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {stats.netPL > 0 ? '+' : ''}{stats.netPL}
+                          </span>
+                      </div>
+                      <div className="flex justify-between items-end">
+                          <span className="text-[10px] text-slate-500 uppercase">ROI</span>
+                          <span className={`font-mono text-xs ${stats.roi >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {stats.roi.toFixed(1)}%
+                          </span>
+                      </div>
+                  </div>
+
+                  {/* COL 2: Record */}
+                  <div className="p-3 flex flex-col justify-center gap-2">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
+                          <Calculator size={12} className="text-orange-400" /> Record
+                      </div>
+                      <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-500 uppercase">Win Rate</span>
+                          <span className="font-mono text-xs text-slate-200">
+                             {stats.spins > 0 ? ((stats.wins / stats.spins) * 100).toFixed(0) : 0}%
+                          </span>
+                      </div>
+                      <div className="flex justify-between text-[10px] font-mono mt-1">
+                          <span className="text-emerald-400">{stats.wins} W</span>
+                          <span className="text-slate-600">|</span>
+                          <span className="text-red-400">{stats.losses} L</span>
+                          <span className="text-slate-600">|</span>
+                          <span className="text-slate-400">{stats.pushes} P</span>
+                      </div>
+                  </div>
+
+                  {/* COL 3: Wheel Stats */}
+                  <div className="p-3 flex flex-col justify-center gap-2">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
+                          <PieChart size={12} className="text-blue-400" /> Distribution
+                      </div>
+                      <div className="flex h-1.5 w-full rounded-full overflow-hidden mb-1">
+                          <div style={{width: `${stats.redPct}%`}} className="bg-red-600" title={`Red: ${stats.red}`} />
+                          <div style={{width: `${stats.blackPct}%`}} className="bg-slate-700" title={`Black: ${stats.black}`} />
+                          <div style={{width: `${stats.greenPct}%`}} className="bg-green-600" title={`Green: ${stats.green}`} />
+                      </div>
+                      <div className="flex justify-between text-[9px] text-slate-500 font-mono">
+                          <span>R: {stats.red} ({stats.redPct.toFixed(0)}%)</span>
+                          <span>B: {stats.black} ({stats.blackPct.toFixed(0)}%)</span>
+                          <span>G: {stats.green}</span>
+                      </div>
+                  </div>
+
+                  {/* COL 4: Lane P/L (Scrollable if many) */}
+                  <div className="p-3 flex flex-col justify-center relative overflow-hidden">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
+                          <Wallet size={12} className="text-purple-400" /> Lane Net P/L
+                      </div>
+                      <div className="overflow-y-auto custom-scrollbar max-h-[40px] pr-1 space-y-0.5">
+                          {Object.keys(stats.laneProfits).length === 0 ? (
+                              <span className="text-[10px] text-slate-600 italic">No lanes active</span>
+                          ) : (
+                              Object.entries(stats.laneProfits).map(([id, profit]) => {
+                                  const lane = lanes.find(l => l.id === id);
+                                  const label = lane ? lane.name : id;
+                                  const match = label.match(/Lane (\d+)/);
+                                  const shortLabel = match ? `L${match[1]}` : label.substring(0,6);
+                                  return (
+                                      <div key={id} className="flex justify-between text-[10px] font-mono border-b border-slate-800/50 last:border-0">
+                                          <span className="text-slate-400">{shortLabel}</span>
+                                          <span className={profit > 0 ? 'text-emerald-400' : profit < 0 ? 'text-red-400' : 'text-slate-500'}>
+                                              {profit > 0 ? '+' : ''}{profit}
+                                          </span>
+                                      </div>
+                                  );
+                              })
+                          )}
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 };
