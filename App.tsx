@@ -547,7 +547,8 @@ const App: React.FC = () => {
             let historyBuffer: SimulationStep[] = [];
 
             let laneRunningBalances: Record<string, number> = {};
-            const startPerLane = settings.startingBankroll / enabledLanes.length;
+            // Initialize each lane with the FULL starting bankroll for comparison
+            const startPerLane = settings.startingBankroll; 
             enabledLanes.forEach(l => {
                 laneRunningBalances[l.id] = startPerLane;
             });
@@ -1137,7 +1138,7 @@ const App: React.FC = () => {
         {/* 4. CHARTS / LOGS */}
         <section className="grid grid-cols-1 md:grid-cols-12 gap-2">
              <div className="md:col-span-4 h-[280px]">
-                <SpinLog history={history} lanes={lanes} className="h-full" />
+                <SpinLog history={history} lanes={lanes} activeLaneId={activeLaneId} className="h-full" />
              </div>
              <div className="md:col-span-8 h-[280px]">
                 <StatsChart 

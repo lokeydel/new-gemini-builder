@@ -67,7 +67,8 @@ const StatsChart: React.FC<StatsChartProps> = ({
   // --- STATS CALCULATION ---
   const { chartData, minVal, maxVal, minStep, maxStep, stats } = useMemo(() => {
     const initialLaneBankrolls: Record<string, number> = {};
-    const startPerLane = activeLanes.length > 0 ? initialBalance / activeLanes.length : initialBalance;
+    // Start all lanes at the full initial balance for direct comparison
+    const startPerLane = initialBalance; 
     activeLanes.forEach(l => { initialLaneBankrolls[l.id] = startPerLane; });
 
     const cData = [
@@ -93,9 +94,16 @@ const StatsChart: React.FC<StatsChartProps> = ({
     for (let i = 0; i < cData.length; i++) {
         const step = cData[i];
         
-        // Min/Max for Graph
+        // Min/Max for Graph - Include individual lanes to ensure they fit in view
         if (step.bankroll < min) { min = step.bankroll; minS = step; }
         if (step.bankroll > max) { max = step.bankroll; maxS = step; }
+
+        if (step.laneBankrolls) {
+            Object.values(step.laneBankrolls).forEach(val => {
+                if (val < min) min = val;
+                if (val > max) max = val;
+            });
+        }
 
         // Stats Logic (Skip index 0 which is seed)
         if (i > 0) {
@@ -248,8 +256,8 @@ const StatsChart: React.FC<StatsChartProps> = ({
                     <defs>
                         {activeLanes.map(lane => (
                             <linearGradient key={lane.id} id={`color-${lane.id}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor={lane.color} stopOpacity={0.8}/>
-                                <stop offset="95%" stopColor={lane.color} stopOpacity={0.1}/>
+                                <stop offset="5%" stopColor={lane.color} stopOpacity={0.15}/>
+                                <stop offset="95%" stopColor={lane.color} stopOpacity={0.05}/>
                             </linearGradient>
                         ))}
                     </defs>
@@ -257,16 +265,16 @@ const StatsChart: React.FC<StatsChartProps> = ({
                     <YAxis domain={[minVal - padding, maxVal + padding]} hide />
                     <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc', borderRadius: '8px' }} />
                     <ReferenceLine y={initialBalance} stroke="#64748b" strokeDasharray="3 3" />
+                    {/* Independent Lanes - No StackId */}
                     {activeLanes.map(lane => (
                         <Area 
                             key={lane.id} 
                             type="monotone" 
                             dataKey={`laneBankrolls.${lane.id}`} 
-                            stackId="1" 
                             stroke={lane.color} 
                             fill={`url(#color-${lane.id})`} 
                             fillOpacity={1} 
-                            strokeWidth={1} 
+                            strokeWidth={2} 
                             isAnimationActive={!isAnimating} 
                             animationDuration={0}
                         />
@@ -430,8 +438,8 @@ const StatsChart: React.FC<StatsChartProps> = ({
                             {/* Lane Gradients */}
                             {activeLanes.map(lane => (
                                 <linearGradient key={lane.id} id={`fs-gradient-${lane.id}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor={lane.color} stopOpacity={0.6}/>
-                                    <stop offset="95%" stopColor={lane.color} stopOpacity={0.1}/>
+                                    <stop offset="5%" stopColor={lane.color} stopOpacity={0.3}/>
+                                    <stop offset="95%" stopColor={lane.color} stopOpacity={0.05}/>
                                 </linearGradient>
                             ))}
                         </defs>
@@ -460,17 +468,17 @@ const StatsChart: React.FC<StatsChartProps> = ({
                         />
                         <ReferenceLine y={initialBalance} stroke="#64748b" strokeDasharray="3 3" />
                         
-                        {/* Stacked Lanes */}
+                        {/* Stacked Lanes - No StackId */}
                         {activeLanes.map(lane => (
                             <Area 
                                 key={lane.id}
                                 name={lane.name}
                                 type="monotone" 
                                 dataKey={`laneBankrolls.${lane.id}`} 
-                                stackId="1" 
                                 stroke={lane.color} 
                                 fill={`url(#fs-gradient-${lane.id})`}
-                                strokeWidth={1}
+                                strokeWidth={2}
+                                fillOpacity={1}
                                 isAnimationActive={!isAnimating}
                                 animationDuration={0}
                             />
