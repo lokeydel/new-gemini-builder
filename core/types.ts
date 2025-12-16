@@ -59,14 +59,25 @@ export interface SpinResult {
   color: 'red' | 'black' | 'green';
 }
 
+export interface LaneLogDetail {
+  laneId: string; 
+  laneName: string;
+  wager: number;
+  profit: number; 
+  balanceBefore: number; // Lane specific balance
+  balanceAfter: number;  // Lane specific balance
+  progressionLabel: string; // e.g. "Step 2 (x4)"
+  wasReset?: boolean;
+}
+
 export interface SimulationStep {
   spinIndex: number;
   result: SpinResult;
-  startingBankroll: number; // Audit anchor: The balance BEFORE this spin
+  startingBankroll: number; // Audit anchor: The GLOBAL balance BEFORE this spin
   betAmount: number;
   outcome: number; // Positive for win, negative for loss
   bankroll: number; // Global Total AFTER this spin
-  laneDetails?: { laneId: string; profit: number; chainIndex?: number; wasReset?: boolean }[]; 
+  laneDetails: LaneLogDetail[]; 
   laneBankrolls: Record<string, number>; // Individual running balance per lane
   activeTriggers?: string[]; // Debug info: which triggers fired this step
   bets?: EvaluatedBet[]; // Structured bet data
@@ -138,6 +149,15 @@ export interface BatchStats {
   avgSpinsToFinish: number;
 }
 
+export interface BatchSession {
+  id: string;
+  label?: string; // User-defined name for this batch
+  timestamp: number;
+  runs: SimulationStep[][];
+  stats: BatchStats;
+  settings: SimulationSettings;
+}
+
 export type SimulationSpeed = 'FAST' | 'MEDIUM' | 'SLOW';
 export type SimulationStatus = 'IDLE' | 'RUNNING' | 'PAUSED';
 
@@ -182,4 +202,5 @@ export interface SavedStrategy {
   lanes: Lane[]; // Saves the entire lane configuration
   settings: Partial<SimulationSettings>;
   savedLayouts?: SavedLayout[]; // Stores the favorites library associated with this strategy
+  history?: SimulationStep[]; // Persisted simulation logs
 }

@@ -2,8 +2,17 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceDot, Label } from 'recharts';
 import { SimulationStep, SimulationStatus, SimulationSpeed, SimulationSettings, ProgressionConfig, Lane } from '../core/types';
-import { PlayCircle, Maximize2, Minimize2, Pause, Play, Square, Zap, Clock, MousePointerClick, Settings, Target, ShieldAlert, RotateCcw, Layers, X, ChevronDown, ArrowUp, ArrowDown, Minus, Download, LogOut, ArrowLeft, XCircle } from 'lucide-react';
+import { PlayCircle, Maximize2, Minimize2, Pause, Play, Square, Zap, Clock, MousePointerClick, RotateCcw, X, ChevronDown, Download, LogOut, ArrowLeft, XCircle, Trash2, AlertOctagon, Table, History, ChevronLeft, ChevronRight, Pencil, Check } from 'lucide-react';
 import { getNumberColor } from '../core/constants';
+import SpinLog from './SpinLog';
+
+interface BatchSummary {
+  id: string;
+  label: string;
+  timestamp: number;
+  winRate: number;
+  netProfit: number;
+}
 
 interface StatsChartProps {
   data: SimulationStep[];
@@ -29,6 +38,24 @@ interface StatsChartProps {
   settings?: SimulationSettings;
   onUpdateSettings?: (settings: SimulationSettings) => void;
   strategyConfig?: ProgressionConfig;
+
+  // Sim Navigation (Within Batch)
+  currentSimIndex?: number;
+  totalSims?: number;
+  onNextSim?: () => void;
+  onPrevSim?: () => void;
+
+  // Batch Navigation (Across Batches)
+  currentBatchIndex?: number;
+  totalBatches?: number;
+  onNextBatch?: () => void;
+  onPrevBatch?: () => void;
+  onDeleteBatch?: () => void;
+  
+  // Batch History Dropdown
+  batchList?: BatchSummary[];
+  onSelectBatch?: (index: number) => void;
+  onRenameBatch?: (id: string, newName: string) => void;
 }
 
 const StatsChart: React.FC<StatsChartProps> = ({ 
@@ -47,9 +74,27 @@ const StatsChart: React.FC<StatsChartProps> = ({
   onToggleFullScreen,
   settings,
   onUpdateSettings,
-  strategyConfig
+  currentSimIndex = 0,
+  totalSims = 1,
+  onNextSim,
+  onPrevSim,
+  currentBatchIndex = -1,
+  totalBatches = 0,
+  onNextBatch,
+  onPrevBatch,
+  onDeleteBatch,
+  batchList = [],
+  onSelectBatch,
+  onRenameBatch
 }) => {
   const [localIsFullScreen, setLocalIsFullScreen] = useState(false);
+  const [isLogExpanded, setIsLogExpanded] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false); // Dropdown State
+  
+  // Renaming State
+  const [isRenamingBatch, setIsRenamingBatch] = useState(false);
+  const [tempBatchName, setTempBatchName] = useState("");
+  
   const isFullScreen = propIsFullScreen !== undefined ? propIsFullScreen : localIsFullScreen;
   const toggleFullScreen = onToggleFullScreen || (() => setLocalIsFullScreen(prev => !prev));
   
@@ -58,24 +103,56 @@ const StatsChart: React.FC<StatsChartProps> = ({
   // Auto-scroll spin log in fullscreen
   useEffect(() => {
     if (isFullScreen && scrollRef.current) {
-        scrollRef.current.scrollTop = 0; // Keep top (newest) visible
+        scrollRef.current.scrollTop = 0; 
     }
   }, [data.length, isFullScreen]);
 
   const activeLanes = lanes.filter(l => l.enabled);
+  
+  const currentBatch = batchList[currentBatchIndex];
+  
+  const handleStartRename = () => {
+      if (currentBatch) {
+          setTempBatchName(currentBatch.label);
+          setIsRenamingBatch(true);
+      }
+  };
+  
+  const handleSaveRename = () => {
+      if (currentBatch && onRenameBatch && tempBatchName.trim()) {
+          onRenameBatch(currentBatch.id, tempBatchName.trim());
+      }
+      setIsRenamingBatch(false);
+  };
 
   // --- STATS CALCULATION ---
-  const { chartData, minVal, maxVal, minStep, maxStep, stats } = useMemo(() => {
+  const { chartData, minVal, maxVal, minStep, maxStep, stats, isBust, lastStep } = useMemo(() => {
     const initialLaneBankrolls: Record<string, number> = {};
     // Start all lanes at the full initial balance for direct comparison
     const startPerLane = initialBalance; 
     activeLanes.forEach(l => { initialLaneBankrolls[l.id] = startPerLane; });
 
+    // Explicitly type the seed step to match SimulationStep to avoid union type issues with optional properties like activeTriggers
+    const seedStep: SimulationStep = {
+        spinIndex: 0,
+        bankroll: initialBalance,
+        outcome: 0,
+        laneBankrolls: initialLaneBankrolls,
+        result: { value: 0, display: '-', color: 'green' },
+        startingBankroll: initialBalance,
+        betAmount: 0,
+        laneDetails: [],
+        activeTriggers: [],
+        bets: [],
+        betDescriptions: []
+    };
+
     const cData = [
-      { spinIndex: 0, bankroll: initialBalance, outcome: 0, laneBankrolls: initialLaneBankrolls },
+      seedStep,
       ...data
     ];
 
+    // Ensure range always includes the initial balance line so gradient calc is correct
     let min = initialBalance;
     let max = initialBalance;
     let minS = cData[0];
@@ -94,10 +171,11 @@ const StatsChart: React.FC<StatsChartProps> = ({
     for (let i = 0; i < cData.length; i++) {
         const step = cData[i];
         
-        // Min/Max for Graph - Include individual lanes to ensure they fit in view
+        // Min/Max for Graph
         if (step.bankroll < min) { min = step.bankroll; minS = step; }
         if (step.bankroll > max) { max = step.bankroll; maxS = step; }
 
+        // Also track lane extremes so they don't get clipped
         if (step.laneBankrolls) {
             Object.values(step.laneBankrolls).forEach(val => {
                 if (val < min) min = val;
@@ -131,23 +209,92 @@ const StatsChart: React.FC<StatsChartProps> = ({
             if (up > maxUpside) maxUpside = up;
         }
     }
+    
+    // Check for premature stop
+    const last = cData[cData.length - 1];
+    const busted = last.activeTriggers?.some((t: string) => t.includes('Insufficient') || t.includes('STOPPED')) || false;
 
     return { 
         chartData: cData, 
         minVal: min, 
         maxVal: max, 
         minStep: minS, 
-        maxStep: maxS,
-        stats: { wins, losses, maxWinStreak, maxLossStreak, maxDrawdown, maxUpside }
+        maxStep: maxS, 
+        stats: { wins, losses, maxWinStreak, maxLossStreak, maxDrawdown, maxUpside },
+        isBust: busted,
+        lastStep: last
     };
   }, [data, initialBalance, activeLanes]);
 
   const range = maxVal - minVal;
-  // Use very tight padding (1% or 2%) to maximize dynamics - ensures graph zooms in on small ranges
-  const padding = range === 0 ? (initialBalance || 100) * 0.05 : range * 0.02;
+  // Use padding to prevent line from hugging top/bottom
+  const padding = range === 0 ? (initialBalance || 100) * 0.05 : range * 0.05;
   
   // Disable animation during active simulation for instant updates
   const isAnimating = simStatus === 'RUNNING' || data.length > 100;
+
+  // --- GRADIENT OFFSET CALCULATION ---
+  const gradientOffset = () => {
+    if (maxVal <= minVal) return 0;
+    if (initialBalance >= maxVal) return 0; // Entire graph is below start -> All Red
+    if (initialBalance <= minVal) return 1; // Entire graph is above start -> All Green
+    
+    // In SVG gradients for Area charts: 0 is Top, 1 is Bottom.
+    // We want the area ABOVE the initialBalance line (which is visually higher, so closer to offset 0) to be Green.
+    // We want the area BELOW the initialBalance line (closer to offset 1) to be Red.
+    return (maxVal - initialBalance) / (maxVal - minVal);
+  };
+  
+  const off = gradientOffset();
+
+  // --- CUSTOM TOOLTIP ---
+  const CustomTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      const step = payload[0].payload as SimulationStep;
+      const isProfit = step.bankroll >= initialBalance;
+      const borderColor = isProfit ? '#4ade80' : '#ef4444'; // green-400 : red-400
+      
+      const isStopStep = step.activeTriggers?.some((t: string) => t.includes('STOPPED') || t.includes('Insufficient'));
+      
+      return (
+        <div className="bg-slate-900/95 backdrop-blur p-3 rounded-lg border-2 shadow-2xl text-xs font-mono z-50 min-w-[140px]" style={{ borderColor }}>
+           <div className="flex items-center justify-between gap-4 mb-2 pb-2 border-b border-slate-800">
+               <span className="text-slate-300 font-bold">Spin {step.spinIndex}</span>
+               {step.result && step.spinIndex > 0 && (
+                   <div className={`px-2 py-0.5 rounded flex items-center justify-center font-bold text-white shadow-sm gap-1 min-w-[32px]
+                       ${step.result.color === 'red' ? 'bg-red-600' : step.result.color === 'black' ? 'bg-slate-950 border border-slate-700' : 'bg-green-600'}
+                   `}>
+                       {step.result.display}
+                   </div>
+               )}
+           </div>
+           
+           <div className="space-y-1">
+               <div className="flex justify-between gap-6">
+                   <span className="text-slate-500">Bankroll</span>
+                   <span className={`font-bold ${isProfit ? 'text-emerald-400' : 'text-red-400'}`}>
+                       ${step.bankroll}
+                   </span>
+               </div>
+               {step.spinIndex > 0 && (
+                   <div className="flex justify-between gap-6">
+                       <span className="text-slate-500">Outcome</span>
+                       <span className={step.outcome >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                           {step.outcome >= 0 ? '+' : ''}{step.outcome}
+                       </span>
+                   </div>
+               )}
+               {isStopStep && (
+                   <div className="mt-2 pt-2 border-t border-red-500/30 text-red-400 font-bold flex items-center gap-1">
+                       <AlertOctagon size={12} /> STOPPED
+                   </div>
+               )}
+           </div>
+        </div>
+      );
+    }
+    return null;
+  };
 
   // --- CUSTOM AXIS TICKS ---
   const renderCustomYTick = (props: any) => {
@@ -184,7 +331,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
   // --- MINI VIEW (DEFAULT) ---
   if (!isFullScreen) {
       if (data.length === 0) return (
-        <div className={`flex flex-col items-center justify-center gap-3 text-slate-500 border border-dashed border-slate-700 rounded-xl bg-slate-800/50 ${className || 'h-72'}`}>
+        <div className={`flex flex-col items-center justify-center gap-3 text-slate-500 border border-dashed border-slate-700 rounded-xl bg-black ${className || 'h-72'}`}>
           <span className="italic">No simulation data available.</span>
           <div className="flex gap-4 items-center mt-2">
             {onSpeedChange && (
@@ -204,17 +351,27 @@ const StatsChart: React.FC<StatsChartProps> = ({
       );
 
       return (
-        <div className={`w-full bg-slate-800 rounded-xl border border-slate-700 flex flex-col ${className || 'h-72'} transition-all duration-300 relative overflow-hidden group`}>
+        <div className={`w-full bg-black rounded-xl border border-slate-800 flex flex-col ${className || 'h-72'} transition-all duration-300 relative overflow-hidden group`}>
           
           {/* Header Overlays */}
           <div className="absolute top-0 left-0 right-0 p-3 flex items-start justify-between z-20 pointer-events-none">
              
-             {/* Title with backdrop */}
-             <div className="bg-slate-900/40 backdrop-blur-sm px-2 py-1 rounded border border-slate-700/50 pointer-events-auto">
-                 <h3 className="font-semibold text-slate-300 text-xs uppercase tracking-wider">Progression Lines</h3>
+             {/* Title with backdrop & Navigation */}
+             <div className="bg-black/40 backdrop-blur-sm px-2 py-1 rounded border border-slate-800/50 pointer-events-auto flex items-center gap-2">
+                 {totalBatches > 1 ? (
+                    <>
+                        <button onClick={(e) => { e.stopPropagation(); onPrevBatch?.(); }} disabled={currentBatchIndex === 0} className="text-slate-400 hover:text-white disabled:opacity-30"><ChevronLeft size={12} /></button>
+                        <span className="font-semibold text-slate-300 text-xs uppercase tracking-wider">
+                           {currentBatch?.label || `Batch ${currentBatchIndex + 1}`} <span className="text-slate-500">/ {totalBatches}</span>
+                        </span>
+                        <button onClick={(e) => { e.stopPropagation(); onNextBatch?.(); }} disabled={currentBatchIndex === totalBatches - 1} className="text-slate-400 hover:text-white disabled:opacity-30"><ChevronRight size={12} /></button>
+                    </>
+                 ) : (
+                    <h3 className="font-semibold text-slate-300 text-xs uppercase tracking-wider">Progression Lines</h3>
+                 )}
              </div>
              
-             {/* Controls Group - Always Visible in Top Right */}
+             {/* Controls Group */}
              <div className="flex items-center gap-2 pointer-events-auto">
                  {/* Run/Stop Button */}
                  {onRunSimulation && (
@@ -252,7 +409,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
           
           <div className="flex-1 w-full h-full pt-0">
             <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }} baseValue="dataMin">
+                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }} baseValue={initialBalance}>
                     <defs>
                         {activeLanes.map(lane => (
                             <linearGradient key={lane.id} id={`color-${lane.id}`} x1="0" y1="0" x2="0" y2="1">
@@ -260,12 +417,27 @@ const StatsChart: React.FC<StatsChartProps> = ({
                                 <stop offset="95%" stopColor={lane.color} stopOpacity={0.05}/>
                             </linearGradient>
                         ))}
+                        {/* Split Gradient for Total Bankroll with fading to black/transparent at the zero line */}
+                        <linearGradient id="splitColor" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#22c55e" stopOpacity={0.7} /> {/* Peak: Vibrant Green */}
+                          <stop offset={off} stopColor="#22c55e" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
+                          <stop offset={off} stopColor="#ef4444" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
+                          <stop offset="100%" stopColor="#ef4444" stopOpacity={0.7} /> {/* Bottom: Vibrant Red */}
+                        </linearGradient>
+                        
+                        {/* Split Stroke Gradient */}
+                        <linearGradient id="splitStroke" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#4ade80" stopOpacity={1} /> {/* Green-400 */}
+                          <stop offset={off} stopColor="#4ade80" stopOpacity={1} />
+                          <stop offset={off} stopColor="#f87171" stopOpacity={1} /> {/* Red-400 */}
+                          <stop offset="100%" stopColor="#f87171" stopOpacity={1} />
+                        </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
                     <YAxis domain={[minVal - padding, maxVal + padding]} hide />
-                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc', borderRadius: '8px' }} />
-                    <ReferenceLine y={initialBalance} stroke="#64748b" strokeDasharray="3 3" />
-                    {/* Independent Lanes - No StackId */}
+                    <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#64748b', strokeWidth: 1, strokeDasharray: '4 4' }} />
+                    <ReferenceLine y={initialBalance} stroke="#94a3b8" strokeDasharray="3 3" />
+                    {/* Independent Lanes */}
                     {activeLanes.map(lane => (
                         <Area 
                             key={lane.id} 
@@ -279,17 +451,23 @@ const StatsChart: React.FC<StatsChartProps> = ({
                             animationDuration={0}
                         />
                     ))}
+                    {/* Main Bankroll Area with Fading Gradient */}
                     <Area 
                         type="monotone" 
                         dataKey="bankroll" 
-                        stroke="#e2e8f0" 
-                        fill="none" 
+                        baseValue={initialBalance}
+                        stroke="url(#splitStroke)" 
+                        fill="url(#splitColor)"
                         strokeWidth={2} 
-                        strokeDasharray="5 5" 
                         isAnimationActive={!isAnimating}
                         animationDuration={0}
                         dot={renderResetDot}
                     />
+                    {isBust && lastStep && (
+                        <ReferenceDot x={lastStep.spinIndex} y={lastStep.bankroll} r={6} fill="#ef4444" stroke="#fff" strokeWidth={2}>
+                             <Label value="STOP" position="top" fill="#ef4444" fontSize={10} fontWeight="bold" dy={-5} />
+                        </ReferenceDot>
+                    )}
                 </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -322,11 +500,126 @@ const StatsChart: React.FC<StatsChartProps> = ({
                  <h1 className="font-bold text-lg text-slate-100 tracking-tight hidden sm:block">Simulation Results</h1>
              </div>
 
-             {/* Batch Tabs (Visual Only) */}
-             <div className="hidden lg:flex items-center gap-1 bg-slate-800 p-1 rounded-lg ml-4">
-                 <button className="px-3 py-1 bg-slate-700 text-white text-xs font-bold rounded shadow-sm border border-slate-600">Current Run</button>
-                 <button className="px-3 py-1 text-slate-500 text-xs font-bold hover:text-slate-300 transition-colors">History</button>
-             </div>
+             {/* BATCH SELECTOR (With Dropdown) */}
+             {totalBatches > 0 && (
+               <div className="hidden lg:flex items-center gap-2 bg-slate-800 p-1 rounded-lg ml-4 border border-slate-700 relative">
+                   <button 
+                     onClick={onPrevBatch} 
+                     disabled={currentBatchIndex <= 0}
+                     className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                   >
+                     <ChevronDown size={14} className="rotate-90" />
+                   </button>
+                   
+                   <button 
+                     onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+                     className="flex items-center gap-2 px-2 hover:bg-slate-700 rounded transition-colors group"
+                   >
+                       <div className="flex flex-col items-start min-w-[100px]">
+                           <span className="text-[10px] text-slate-500 uppercase font-bold leading-tight flex items-center gap-1">
+                               Batch
+                               <span className="text-slate-600">|</span>
+                               <span className="text-slate-400">{currentBatchIndex + 1}/{totalBatches}</span>
+                           </span>
+                           {isRenamingBatch ? (
+                               <input 
+                                   autoFocus
+                                   value={tempBatchName}
+                                   onChange={(e) => setTempBatchName(e.target.value)}
+                                   onClick={(e) => e.stopPropagation()}
+                                   onKeyDown={(e) => {
+                                       if(e.key === 'Enter') handleSaveRename();
+                                       e.stopPropagation();
+                                   }}
+                                   onBlur={handleSaveRename}
+                                   className="bg-slate-950 text-indigo-300 font-bold text-xs border border-indigo-500/50 rounded px-1 w-full outline-none"
+                               />
+                           ) : (
+                               <span className="text-xs font-bold text-indigo-300 leading-tight truncate max-w-[140px] text-left">
+                                   {currentBatch?.label || 'Batch'}
+                               </span>
+                           )}
+                       </div>
+                       <ChevronDown size={12} className={`text-slate-500 transition-transform ${isHistoryOpen ? 'rotate-180' : ''}`} />
+                   </button>
+
+                   {/* Rename Trigger Button */}
+                   {!isRenamingBatch && onRenameBatch && (
+                       <button 
+                           onClick={(e) => { e.stopPropagation(); handleStartRename(); }}
+                           className="p-1 hover:bg-slate-700 rounded text-slate-500 hover:text-white"
+                           title="Rename Batch"
+                       >
+                           <Pencil size={10} />
+                       </button>
+                   )}
+                   
+                   <button 
+                     onClick={onNextBatch} 
+                     disabled={currentBatchIndex >= totalBatches - 1}
+                     className="p-1 hover:bg-slate-700 rounded text-slate-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                   >
+                     <ChevronDown size={14} className="-rotate-90" />
+                   </button>
+
+                   {onDeleteBatch && (
+                     <div className="w-px h-4 bg-slate-600 mx-1" />
+                   )}
+
+                   {onDeleteBatch && (
+                     <button 
+                       onClick={onDeleteBatch} 
+                       className="p-1 hover:bg-red-900/50 rounded text-slate-500 hover:text-red-400"
+                       title="Delete Batch"
+                     >
+                       <Trash2 size={12} />
+                     </button>
+                   )}
+
+                   {/* DROPDOWN MENU */}
+                   {isHistoryOpen && (
+                       <>
+                           <div className="fixed inset-0 z-40" onClick={() => setIsHistoryOpen(false)} />
+                           <div className="absolute top-full left-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden flex flex-col max-h-[300px]">
+                               <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                                   <History size={12} /> Simulation History
+                               </div>
+                               <div className="overflow-y-auto custom-scrollbar flex-1">
+                                   {batchList.slice().reverse().map((b, revIdx) => {
+                                       // Reverse index calculation
+                                       const actualIndex = batchList.length - 1 - revIdx;
+                                       const isActive = actualIndex === currentBatchIndex;
+                                       return (
+                                           <button 
+                                               key={b.id}
+                                               onClick={() => { onSelectBatch?.(actualIndex); setIsHistoryOpen(false); }}
+                                               className={`w-full text-left px-3 py-2 border-b border-slate-800 hover:bg-slate-800 transition-colors flex items-center justify-between group ${isActive ? 'bg-slate-800/50' : ''}`}
+                                           >
+                                               <div className="flex-1 min-w-0 pr-2">
+                                                   <div className={`text-xs font-bold truncate ${isActive ? 'text-indigo-300' : 'text-slate-300'}`}>
+                                                       {b.label}
+                                                   </div>
+                                                   <div className="text-[10px] text-slate-500">
+                                                       {new Date(b.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                                                   </div>
+                                               </div>
+                                               <div className="text-right shrink-0">
+                                                   <div className={`text-xs font-bold font-mono ${b.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                       {b.netProfit >= 0 ? '+' : ''}{b.netProfit.toFixed(0)}
+                                                   </div>
+                                                   <div className="text-[9px] text-slate-500">
+                                                       Win Rate {(b.winRate * 100).toFixed(0)}%
+                                                   </div>
+                                               </div>
+                                           </button>
+                                       )
+                                   })}
+                               </div>
+                           </div>
+                       </>
+                   )}
+               </div>
+             )}
          </div>
 
          {/* Center Inputs */}
@@ -408,6 +701,30 @@ const StatsChart: React.FC<StatsChartProps> = ({
       {/* 2. MAIN CONTENT GRID */}
       <div className="flex-1 overflow-hidden flex relative">
           
+          {/* LOG EXPANSION OVERLAY */}
+          {isLogExpanded && (
+              <div className="absolute inset-0 z-[60] bg-slate-950 flex flex-col animate-in fade-in duration-200">
+                  <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-700 shrink-0">
+                       <div className="flex items-center gap-2">
+                           <div className="p-1.5 bg-indigo-500/20 rounded text-indigo-400"><Table size={16} /></div>
+                           <div>
+                               <h3 className="font-bold text-slate-200 text-sm uppercase tracking-wider">Detailed Spin Log</h3>
+                               <p className="text-[10px] text-slate-500">{data.length} Spins Recorded</p>
+                           </div>
+                       </div>
+                       <button 
+                           onClick={() => setIsLogExpanded(false)} 
+                           className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded transition-all text-xs font-bold"
+                       >
+                           <Minimize2 size={14} /> EXIT VIEW
+                       </button>
+                  </div>
+                  <div className="flex-1 overflow-hidden p-0 relative">
+                       <SpinLog history={data} lanes={lanes} className="h-full w-full border-none rounded-none bg-slate-950" />
+                  </div>
+              </div>
+          )}
+          
           {/* FLOATING CLOSE BUTTON IN CHART AREA (Backup) */}
           <button 
               onClick={toggleFullScreen}
@@ -418,12 +735,16 @@ const StatsChart: React.FC<StatsChartProps> = ({
           </button>
 
           {/* LEFT: CHART AREA */}
-          <div className="flex-1 relative bg-slate-950 p-6 flex flex-col">
-              {/* Chart Legend / Info Overlay could go here */}
+          <div className="flex-1 relative bg-black p-6 flex flex-col">
+              {/* Chart Legend / Info Overlay */}
               <div className="absolute top-6 left-6 z-10 text-xs font-mono text-slate-500">
                    <div className="flex items-center gap-2 mb-1">
-                       <div className="w-3 h-3 bg-emerald-500/20 border border-emerald-500 rounded-sm"></div>
-                       <span>Bankroll Performance</span>
+                       <div className="w-3 h-3 bg-emerald-500/30 border border-emerald-500 rounded-sm"></div>
+                       <span>Profit</span>
+                   </div>
+                   <div className="flex items-center gap-2 mb-1">
+                       <div className="w-3 h-3 bg-red-500/30 border border-red-500 rounded-sm"></div>
+                       <span>Loss</span>
                    </div>
                    <div className="flex items-center gap-2">
                        <div className="w-3 h-0 border-t border-dashed border-slate-500"></div>
@@ -433,7 +754,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
 
               <div className="flex-1 w-full min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData} margin={{ top: 20, right: 30, left: 10, bottom: 0 }} baseValue="dataMin">
+                    <AreaChart data={chartData} margin={{ top: 20, right: 30, left: 10, bottom: 0 }} baseValue={initialBalance}>
                         <defs>
                             {/* Lane Gradients */}
                             {activeLanes.map(lane => (
@@ -442,6 +763,21 @@ const StatsChart: React.FC<StatsChartProps> = ({
                                     <stop offset="95%" stopColor={lane.color} stopOpacity={0.05}/>
                                 </linearGradient>
                             ))}
+                            {/* Split Gradient for Total Bankroll with fading to black/transparent at the zero line */}
+                            <linearGradient id="fs-splitColor" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#22c55e" stopOpacity={0.9} /> {/* Peak: Vibrant Green */}
+                              <stop offset={off} stopColor="#22c55e" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
+                              <stop offset={off} stopColor="#ef4444" stopOpacity={0.02} /> {/* Middle: Near Transparent */}
+                              <stop offset="100%" stopColor="#ef4444" stopOpacity={0.9} /> {/* Bottom: Vibrant Red */}
+                            </linearGradient>
+                            
+                            {/* Split Stroke Gradient */}
+                            <linearGradient id="fs-splitStroke" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#4ade80" stopOpacity={1} /> {/* Green-400 */}
+                              <stop offset={off} stopColor="#4ade80" stopOpacity={1} />
+                              <stop offset={off} stopColor="#f87171" stopOpacity={1} /> {/* Red-400 */}
+                              <stop offset="100%" stopColor="#f87171" stopOpacity={1} />
+                            </linearGradient>
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={true} horizontal={true} />
                         <XAxis 
@@ -460,12 +796,7 @@ const StatsChart: React.FC<StatsChartProps> = ({
                             width={40}
                             tick={renderCustomYTick}
                         />
-                        <Tooltip 
-                            contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc', borderRadius: '8px' }}
-                            itemStyle={{ color: '#10b981' }}
-                            formatter={(value: number, name: string) => [`$${value}`, name]}
-                            labelFormatter={(label) => `Spin ${label}`}
-                        />
+                        <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#64748b', strokeWidth: 1, strokeDasharray: '4 4' }} />
                         <ReferenceLine y={initialBalance} stroke="#64748b" strokeDasharray="3 3" />
                         
                         {/* Stacked Lanes - No StackId */}
@@ -479,19 +810,20 @@ const StatsChart: React.FC<StatsChartProps> = ({
                                 fill={`url(#fs-gradient-${lane.id})`}
                                 strokeWidth={2}
                                 fillOpacity={1}
-                                isAnimationActive={!isAnimating}
+                                isAnimationActive={!isAnimating} 
                                 animationDuration={0}
                             />
                         ))}
 
-                        {/* Total Bankroll Line Overlay */}
+                        {/* Total Bankroll Line Overlay - BaseValue creates the bidirectional fill */}
                         <Area 
                             name="Total Bankroll"
                             type="monotone" 
                             dataKey="bankroll" 
-                            stroke="#10b981" 
+                            baseValue={initialBalance}
+                            stroke="url(#fs-splitStroke)" 
+                            fill="url(#fs-splitColor)"
                             strokeWidth={3}
-                            fill="none" 
                             isAnimationActive={!isAnimating}
                             animationDuration={0}
                             dot={renderResetDot}
@@ -504,6 +836,13 @@ const StatsChart: React.FC<StatsChartProps> = ({
                         <ReferenceDot x={minStep.spinIndex} y={minStep.bankroll} r={4} fill="#ef4444" stroke="#450a0a" strokeWidth={2}>
                            <Label value={`$${minStep.bankroll}`} position="bottom" fill="#ef4444" fontSize={12} fontWeight="bold" dy={10} />
                         </ReferenceDot>
+                        
+                        {/* Stop Indicator */}
+                        {isBust && lastStep && (
+                            <ReferenceDot x={lastStep.spinIndex} y={lastStep.bankroll} r={6} fill="#ef4444" stroke="#fff" strokeWidth={2}>
+                                 <Label value="STOP" position="top" fill="#ef4444" fontSize={10} fontWeight="bold" dy={-5} />
+                            </ReferenceDot>
+                        )}
 
                     </AreaChart>
                 </ResponsiveContainer>
@@ -512,15 +851,26 @@ const StatsChart: React.FC<StatsChartProps> = ({
               {/* Bottom Info Bar for Chart */}
               <div className="h-8 mt-2 border-t border-slate-800 flex items-center justify-between text-xs text-slate-500 font-mono px-2">
                   <div className="flex items-center gap-4">
-                      <button className="flex items-center gap-1 hover:text-white"><ChevronDown size={14} /> PREV</button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); onPrevSim?.(); }} 
+                        disabled={!onPrevSim || currentSimIndex === 0}
+                        className="flex items-center gap-1 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <ChevronDown size={14} className="rotate-90" /> PREV
+                      </button>
                   </div>
                   <div className="flex items-center gap-2 bg-slate-900 px-3 py-1 rounded-full border border-slate-800">
-                      <span>BATCH 1 - RUN 1</span>
-                      <X size={12} className="cursor-pointer hover:text-white" />
+                      <span>RUN {currentSimIndex + 1} <span className="text-slate-600">/</span> {totalSims}</span>
                   </div>
                   <div className="flex items-center gap-4">
-                      {data.length > 0 && <span className="text-emerald-400 font-bold">${data[data.length-1].bankroll} ({( (data[data.length-1].bankroll - initialBalance)/initialBalance * 100 ).toFixed(1)}% ROI)</span>}
-                      <button className="flex items-center gap-1 hover:text-white">NEXT <ChevronDown size={14} className="-rotate-90" /></button>
+                      {data.length > 0 && <span className={data[data.length-1].bankroll >= initialBalance ? "text-emerald-400 font-bold" : "text-red-400 font-bold"}>${data[data.length-1].bankroll} ({( (data[data.length-1].bankroll - initialBalance)/initialBalance * 100 ).toFixed(1)}% ROI)</span>}
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); onNextSim?.(); }} 
+                        disabled={!onNextSim || (currentSimIndex !== undefined && totalSims !== undefined && currentSimIndex >= totalSims - 1)}
+                        className="flex items-center gap-1 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        NEXT <ChevronDown size={14} className="-rotate-90" />
+                      </button>
                   </div>
               </div>
           </div>
@@ -561,7 +911,12 @@ const StatsChart: React.FC<StatsChartProps> = ({
               {/* 2. Compact Spin Log */}
               <div className="flex items-center justify-between px-3 py-2 bg-slate-800 border-b border-slate-700">
                   <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Spin Log</span>
-                  <span className="text-[10px] bg-slate-900 px-2 py-0.5 rounded text-slate-500">FULL SCREEN</span>
+                  <button 
+                      onClick={() => setIsLogExpanded(true)} 
+                      className="text-[10px] bg-indigo-900/50 hover:bg-indigo-600 px-2 py-0.5 rounded text-indigo-300 hover:text-white transition-colors font-bold uppercase flex items-center gap-1"
+                  >
+                      <Maximize2 size={10} /> Full Screen
+                  </button>
               </div>
               <div className="flex-1 overflow-auto custom-scrollbar bg-slate-950 relative" ref={scrollRef}>
                  <table className="w-full text-left border-collapse">
@@ -574,8 +929,8 @@ const StatsChart: React.FC<StatsChartProps> = ({
                          </tr>
                      </thead>
                      <tbody className="text-xs font-mono divide-y divide-slate-800">
-                         {/* Render reversed copy so newest is top */}
-                         {[...data].reverse().map(step => {
+                         {/* Render chronological so Spin 1 is top */}
+                         {data.map(step => {
                              const color = getNumberColor(step.result.value);
                              const bg = color === 'red' ? 'bg-red-600' : color === 'black' ? 'bg-slate-800' : 'bg-green-600';
                              const isWin = step.outcome > 0;

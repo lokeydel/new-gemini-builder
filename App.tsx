@@ -1,9 +1,9 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Bet, BetPlacement, ProgressionConfig, ProgressionAction, 
   SimulationSettings, SimulationStep, SimulationSpeed, SimulationStatus, 
-  BatchStats, TriggerBet, SavedLayout, Lane, SavedStrategy, RuntimeLane, EvaluatedBet, SpinResult
+  BatchStats, TriggerBet, SavedLayout, Lane, SavedStrategy, RuntimeLane, EvaluatedBet, SpinResult, LaneLogDetail, BatchSession
 } from './core/types';
 import { spinWheel, parseSequence, getSpinResult } from './core/game';
 import { prepareLaneForSpin, updateLaneAfterSpin, resolveSpin } from './core/simulation';
@@ -145,14 +145,17 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('roulette_layouts', JSON.stringify(savedLayouts)); }, [savedLayouts]);
   
   // --- Sim State ---
-  const [history, setHistory] = useState<SimulationStep[]>([]);
-  const [selectedChip, setSelectedChip] = useState(5);
-  const [speed, setSpeed] = useState<SimulationSpeed>('FAST');
-  const [simStatus, setSimStatus] = useState<SimulationStatus>('IDLE');
-  const [batchStats, setBatchStats] = useState<BatchStats | null>(null);
-  const [aiAnalysis, setAiAnalysis] = useState<string>('');
-  const [isGraphFullScreen, setIsGraphFullScreen] = useState(false);
-  const [isTestPanelOpen, setIsTestPanelOpen] = useState(false);
+  const [batches, setBatches] = useState<BatchSession[]>([]);
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  
+  // Derived state for current view with MEMOIZATION to fix Error #185
+  const activeBatch = useMemo(() => batches.find(b => b.id === activeBatchId), [batches, activeBatchId]);
+  const currentBatchHistories = useMemo(() => activeBatch?.runs || [], [activeBatch]);
+  const currentBatchStats = activeBatch?.stats || null;
+
+  const [currentSimIndex, setCurrentSimIndex] = useState(0);
+  // View data: either the live running history OR the selected history from batch
+  const [displayHistory, setDisplayHistory] = useState<SimulationStep[]>([]);
 
   // Refs
   const simStatusRef = useRef<SimulationStatus>('IDLE');
@@ -163,12 +166,36 @@ const App: React.FC = () => {
   const isMountedRef = useRef(true);
   const analysisIdRef = useRef<number>(0);
 
+  const [simStatus, setSimStatus] = useState<SimulationStatus>('IDLE');
+
+  // Sync displayHistory when navigation changes
+  useEffect(() => {
+      if (simStatusRef.current === 'RUNNING') return; // Don't sync during run, let run loop handle it
+      if (currentBatchHistories.length > 0 && currentSimIndex < currentBatchHistories.length) {
+          setDisplayHistory(currentBatchHistories[currentSimIndex]);
+          const last = currentBatchHistories[currentSimIndex][currentBatchHistories[currentSimIndex].length - 1];
+          if(last) setBankroll(last.bankroll);
+          else setBankroll(activeBatch?.settings.startingBankroll || 1000);
+      } else {
+          // If already empty, don't set to new empty array to prevent infinite loops if dependencies are unstable
+          setDisplayHistory(prev => prev.length === 0 ? prev : []);
+          setBankroll(settings.startingBankroll);
+      }
+  }, [activeBatchId, currentSimIndex, currentBatchHistories, settings.startingBankroll, activeBatch]);
+
+  const [selectedChip, setSelectedChip] = useState(5);
+  const [speed, setSpeed] = useState<SimulationSpeed>('FAST');
+  const [batchStats, setBatchStats] = useState<BatchStats | null>(null); // Kept for backwards compatibility logic
+  const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  const [isGraphFullScreen, setIsGraphFullScreen] = useState(false);
+  const [isTestPanelOpen, setIsTestPanelOpen] = useState(false);
+
   useEffect(() => { simStatusRef.current = simStatus; }, [simStatus]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
   useEffect(() => { return () => { isMountedRef.current = false; }; }, []);
 
   // --- Derived State Helpers ---
-  const getActiveLane = () => lanes.find(l => l.id === activeLaneId) || lanes[0];
+  const activeLane = useMemo(() => lanes.find(l => l.id === activeLaneId) || lanes[0], [lanes, activeLaneId]);
   
   const updateActiveLane = (updater: (lane: Lane) => Lane) => {
       setLanes(prev => {
@@ -180,30 +207,30 @@ const App: React.FC = () => {
   // --- Helper to get the correct bets for display (fixing the visual bug) ---
   const getActiveChainIndex = (laneId: string) => {
       // If idle, show step 0 (editing)
-      if (simStatus === 'IDLE' || history.length === 0) return 0;
+      if (simStatus === 'IDLE' || displayHistory.length === 0) return 0;
       
       // If running/paused, show the 'next' step logic, which is stored in the last history update
-      const lastStep = history[history.length - 1];
+      const lastStep = displayHistory[displayHistory.length - 1];
       const detail = lastStep.laneDetails?.find(d => d.laneId === laneId);
-      return detail?.chainIndex ?? 0;
+      return 0; // TODO: Implement reading precise chain state from history if needed visually
   };
   
   const activeChainIndex = getActiveChainIndex(activeLaneId);
 
   // --- Strategy Persistence Functions ---
   const handleSaveStrategy = () => {
-      // IMPORTANT: Include savedLayouts (Favorites) in the strategy file
+      // IMPORTANT: Include savedLayouts (Favorites) AND history (logs) in the strategy file
       const strategyConfig: SavedStrategy = {
           id: Date.now().toString(),
           name: currentStrategyName,
           lanes: lanes,
           settings: settings,
-          savedLayouts: savedLayouts
+          savedLayouts: savedLayouts,
+          history: displayHistory // Include logs of current view
       };
 
       const fullExport = {
           ...strategyConfig,
-          history: history,
           exportedAt: new Date().toISOString(),
           app: "ProRoulette Sim"
       };
@@ -259,13 +286,21 @@ const App: React.FC = () => {
       setLanes(sanitizedLanes);
 
       if (sanitizedLanes.length > 0) setActiveLaneId(sanitizedLanes[0].id);
+      
+      // Merge Settings
       if (strategy.settings) setSettings(prev => ({...prev, ...strategy.settings}));
       
-      // Load favorites from strategy, or clear if none (enforcing strict strategy ownership)
-      setSavedLayouts(strategy.savedLayouts || []);
+      // Load favorites from strategy
+      if (strategy.savedLayouts) {
+        setSavedLayouts(strategy.savedLayouts);
+      }
       
       setCurrentStrategyName(strategy.name);
-      setHistory([]);
+      
+      // Clear current session
+      setBatches([]);
+      setActiveBatchId(null);
+      setDisplayHistory([]);
       setBankroll(strategy.settings.startingBankroll || 1000);
   };
 
@@ -298,7 +333,10 @@ const App: React.FC = () => {
       }]);
       setActiveLaneId(`lane-${Date.now()}`); 
       setCurrentStrategyName("New Strategy");
-      setHistory([]);
+      setBatches([]);
+      setActiveBatchId(null);
+      setDisplayHistory([]);
+      setCurrentSimIndex(0);
       setBankroll(settings.startingBankroll);
 
       // Start fresh with no favorites for a new strategy
@@ -307,7 +345,7 @@ const App: React.FC = () => {
 
   // --- Lane Management ---
   const handleAddLane = () => {
-      const active = getActiveLane();
+      const active = activeLane;
       const nextIndex = lanes.length;
       const color = LANE_COLORS[nextIndex % LANE_COLORS.length];
       
@@ -401,7 +439,7 @@ const App: React.FC = () => {
     e?.preventDefault();
     e?.stopPropagation();
     
-    const active = getActiveLane();
+    const active = activeLane;
     if (active.bets.length === 0) return;
     
     const nextNum = savedLayouts.length + 1;
@@ -461,22 +499,27 @@ const App: React.FC = () => {
     }
   };
 
-  const generateStats = (numSims: number, wins: number, losses: number, finalBankrolls: number[], totalSpins: number, lastHistory: SimulationStep[], runId: number) => {
+  const finishBatch = (collectedHistories: SimulationStep[][], finalStats: BatchStats, runId: number) => {
       if (!isMountedRef.current) return;
-      const stats: BatchStats = {
-          totalSimulations: numSims,
-          wins, losses,
-          avgFinalBankroll: finalBankrolls.reduce((a, b) => a + b, 0) / numSims,
-          bestRun: Math.max(...finalBankrolls),
-          worstRun: Math.min(...finalBankrolls),
-          avgSpinsToFinish: totalSpins / numSims
+      
+      const newBatch: BatchSession = {
+          id: runId.toString(),
+          label: `Batch ${batches.length + 1}`,
+          timestamp: Date.now(),
+          runs: collectedHistories,
+          stats: finalStats,
+          settings: { ...settings }
       };
-      setBatchStats(stats);
+
+      setBatches(prev => [...prev, newBatch]);
+      setActiveBatchId(newBatch.id);
+      setCurrentSimIndex(0);
       setSimStatus('IDLE');
       
-      const analysisPromise = (numSims === 1 && lastHistory.length > 0)
-        ? analyzeSimulationResults(settings.startingBankroll, finalBankrolls[0], lastHistory.length, lastHistory)
-        : analyzeBatchResults(stats);
+      // Auto-load analysis
+      const analysisPromise = (newBatch.runs.length === 1 && newBatch.runs[0].length > 0)
+        ? analyzeSimulationResults(settings.startingBankroll, newBatch.runs[0][newBatch.runs[0].length-1].bankroll, newBatch.runs[0].length, newBatch.runs[0])
+        : analyzeBatchResults(finalStats);
 
       analysisPromise.then(analysis => {
         if(isMountedRef.current && analysisIdRef.current === runId) setAiAnalysis(analysis);
@@ -525,9 +568,8 @@ const App: React.FC = () => {
     analysisIdRef.current = runId;
 
     let allFinalBankrolls: number[] = [];
+    let collectedHistories: SimulationStep[][] = [];
     let wins = 0, losses = 0, totalSpinsToFinish = 0;
-    let lastSimHistory: SimulationStep[] = [];
-    let lastFinalBankroll = settings.startingBankroll;
     
     let lastUiUpdateTime = 0;
     const UI_UPDATE_INTERVAL_MS = 16; // ~60fps target for live feeling
@@ -537,7 +579,8 @@ const App: React.FC = () => {
             if (signal.aborted) break;
             
             if (isMountedRef.current) {
-                setHistory([]);
+                // Clear display history for fresh visual start of this run
+                setDisplayHistory([]);
                 setBankroll(settings.startingBankroll);
             }
             
@@ -610,17 +653,26 @@ const App: React.FC = () => {
                 // --- STRICT BANKROLL GUARDRAIL (Per Bet Check) ---
                 if (!isTestMode && totalSpinWager > currentBankroll) {
                      console.warn(`Bet ($${totalSpinWager}) exceeds bankroll ($${currentBankroll}). Stopping simulation.`);
+                     
+                     // Force close simulation run as a loss/stop
                      simHistory.push({
                         spinIndex: i + 1,
                         result: { value: 0, display: 'X', color: 'green' },
                         startingBankroll: currentBankroll,
-                        betAmount: 0,
+                        betAmount: 0, // No bet placed as we couldn't afford it
                         outcome: 0,
-                        bankroll: currentBankroll,
+                        bankroll: currentBankroll, // Balance preserved
                         laneBankrolls: { ...laneRunningBalances },
                         activeTriggers: ['SIM STOPPED: Insufficient Funds'],
-                        betDescriptions: ['Bankruptcy Protection: Bet exceeded balance']
+                        betDescriptions: ['Bankruptcy Protection: Bet exceeded balance'],
+                        laneDetails: []
                      });
+                     
+                     // Update UI immediately for this final step
+                     if (isMountedRef.current) {
+                         setDisplayHistory(prev => [...prev, ...historyBuffer, simHistory[simHistory.length - 1]]);
+                         setBankroll(currentBankroll);
+                     }
                      break; 
                 }
 
@@ -636,15 +688,9 @@ const App: React.FC = () => {
                 // --- RESOLVE ---
                 // We now aggregate all bets from all lanes to create a global P/L,
                 // but we also track per-lane stats.
-                const globalBets: Bet[] = [];
-                const laneDetails: { laneId: string; profit: number; chainIndex?: number; wasReset?: boolean }[] = [];
+                const laneLogDetails: LaneLogDetail[] = [];
                 const allEvaluatedBets: EvaluatedBet[] = [];
 
-                // Flatten all bets for the canonical resolver
-                // Wait, we can't flatten because Lanes track state independently.
-                // We must process lanes individually using updateLaneAfterSpin (which uses resolveSpin internally now).
-                
-                let globalPayout = 0;
                 let globalWager = 0;
                 let netPL = 0;
 
@@ -652,18 +698,21 @@ const App: React.FC = () => {
                     const data = laneBetsMap.get(rLane.id);
                     if (!data) continue;
 
+                    // Capture balance BEFORE outcome
+                    const laneBalanceBefore = laneRunningBalances[rLane.id];
+
                     // Delegate to the STRICT Engine
-                    const { profit, wager, totalPayout, updatedLaneState, wasReset, evaluatedBets } = updateLaneAfterSpin(
+                    // PASS Number.MAX_SAFE_INTEGER as virtual balance to avoid internal errors since we handled global bankroll above
+                    const { profit, wager, updatedLaneState, wasReset, evaluatedBets, progressionLabel } = updateLaneAfterSpin(
                         rLane,
                         data.bets,
                         result,
                         rLane.config,
                         lanePrecalc.find(p => p.laneId === rLane.id)?.parsedSequence || [],
-                        currentBankroll // Passed for calc only
+                        Number.MAX_SAFE_INTEGER 
                     );
 
                     Object.assign(rLane, updatedLaneState);
-                    globalPayout += totalPayout;
                     globalWager += wager;
                     netPL += profit;
                     
@@ -671,19 +720,28 @@ const App: React.FC = () => {
                         allEvaluatedBets.push(...evaluatedBets);
                     }
 
-                    laneRunningBalances[rLane.id] = (laneRunningBalances[rLane.id]) + profit;
+                    const laneBalanceAfter = laneBalanceBefore + profit;
+                    laneRunningBalances[rLane.id] = laneBalanceAfter;
                     
-                    laneDetails.push({ 
-                        laneId: rLane.id, 
-                        profit: profit, 
-                        chainIndex: rLane.chainIndex,
+                    laneLogDetails.push({ 
+                        laneId: rLane.id,
+                        laneName: rLane.name,
+                        wager: wager,
+                        profit: profit,
+                        balanceBefore: laneBalanceBefore,
+                        balanceAfter: laneBalanceAfter,
+                        progressionLabel: progressionLabel,
                         wasReset
                     });
                 }
                 
                 // End Balance = Start Balance + Net P/L
                 // This ensures perfect continuity row-to-row
+                // If Net P/L leads to < 0, mathematically it shouldn't because totalWager <= currentBankroll
                 currentBankroll = startBalanceForStep + netPL;
+                
+                // Absolute Safety Clamp - No negative numbers EVER
+                if (currentBankroll < 0) currentBankroll = 0;
 
                 const step: SimulationStep = {
                     spinIndex: i + 1,
@@ -692,7 +750,7 @@ const App: React.FC = () => {
                     betAmount: globalWager,
                     outcome: netPL,
                     bankroll: currentBankroll,
-                    laneDetails,
+                    laneDetails: laneLogDetails,
                     laneBankrolls: { ...laneRunningBalances },
                     activeTriggers: activeTriggersForStep,
                     betDescriptions: stepBetDescriptions,
@@ -704,29 +762,32 @@ const App: React.FC = () => {
 
                 const n = Date.now();
                 if ((speedRef.current !== 'FAST' || n - lastUiUpdateTime > UI_UPDATE_INTERVAL_MS || i === spinsPerSim - 1) && isMountedRef.current) {
-                    setHistory(prev => [...prev, ...historyBuffer]);
+                    setDisplayHistory(prev => [...prev, ...historyBuffer]);
                     setBankroll(currentBankroll);
                     historyBuffer = [];
                     lastUiUpdateTime = n;
                 }
             } 
 
+            collectedHistories.push(simHistory);
             allFinalBankrolls.push(currentBankroll);
             totalSpinsToFinish += simSpins;
             if (currentBankroll > settings.startingBankroll) wins++;
             else if (currentBankroll < settings.startingBankroll) losses++;
             
-            lastSimHistory = simHistory;
-            lastFinalBankroll = currentBankroll;
-            
             if (s < numSims - 1 && speedRef.current !== 'FAST') await new Promise(r => setTimeout(r, 500));
         }
 
-        if (isMountedRef.current) {
-            setBankroll(lastFinalBankroll);
-            setHistory(lastSimHistory);
-        }
-        generateStats(numSims, wins, losses, allFinalBankrolls, totalSpinsToFinish, lastSimHistory, runId);
+        const stats: BatchStats = {
+            totalSimulations: numSims,
+            wins, losses,
+            avgFinalBankroll: allFinalBankrolls.reduce((a, b) => a + b, 0) / numSims,
+            bestRun: Math.max(...allFinalBankrolls),
+            worstRun: Math.min(...allFinalBankrolls),
+            avgSpinsToFinish: totalSpinsToFinish / numSims
+        };
+
+        finishBatch(collectedHistories, stats, runId);
 
     } catch(e: any) {
         if (e.message !== 'Aborted') {
@@ -761,7 +822,74 @@ const App: React.FC = () => {
     setSimStatus('IDLE');
   };
 
-  const activeLane = getActiveLane();
+  const handleNextSim = () => {
+    if (currentSimIndex < currentBatchHistories.length - 1) {
+        setCurrentSimIndex(prev => prev + 1);
+    }
+  };
+
+  const handlePrevSim = () => {
+    if (currentSimIndex > 0) {
+        setCurrentSimIndex(prev => prev - 1);
+    }
+  };
+
+  const getActiveBatchIndex = () => batches.findIndex(b => b.id === activeBatchId);
+
+  const handleNextBatch = () => {
+      const idx = getActiveBatchIndex();
+      if (idx !== -1 && idx < batches.length - 1) {
+          setActiveBatchId(batches[idx + 1].id);
+          setCurrentSimIndex(0);
+      }
+  };
+
+  const handlePrevBatch = () => {
+      const idx = getActiveBatchIndex();
+      if (idx > 0) {
+          setActiveBatchId(batches[idx - 1].id);
+          setCurrentSimIndex(0);
+      }
+  };
+
+  const handleDeleteBatch = () => {
+      const idx = getActiveBatchIndex();
+      if (idx === -1) return;
+      
+      const newBatches = batches.filter(b => b.id !== activeBatchId);
+      setBatches(newBatches);
+      
+      if (newBatches.length > 0) {
+          // Try to go to same index (which is now next item) or last item
+          const newIdx = Math.min(idx, newBatches.length - 1);
+          setActiveBatchId(newBatches[newIdx].id);
+      } else {
+          setActiveBatchId(null);
+          setDisplayHistory([]);
+          setBankroll(settings.startingBankroll);
+      }
+      setCurrentSimIndex(0);
+  };
+  
+  const handleRenameBatch = (batchId: string, newLabel: string) => {
+      setBatches(prev => prev.map(b => b.id === batchId ? { ...b, label: newLabel } : b));
+  };
+
+  // --- Prep Batch List for Dropdown Navigation ---
+  const batchList = useMemo(() => batches.map((b, i) => ({
+      id: b.id,
+      label: b.label || `Batch ${i + 1}`,
+      timestamp: b.timestamp,
+      winRate: b.stats.totalSimulations > 0 ? b.stats.wins / b.stats.totalSimulations : 0,
+      netProfit: b.stats.avgFinalBankroll - b.settings.startingBankroll
+  })), [batches]);
+
+  const handleSelectBatch = (index: number) => {
+      if (batches[index]) {
+          setActiveBatchId(batches[index].id);
+          setCurrentSimIndex(0);
+      }
+  };
 
   // Compact Settings Bar
   const SettingsBar = () => (
@@ -886,14 +1014,14 @@ const App: React.FC = () => {
                 <h1 className="text-lg font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-300 leading-none">
                     ProRoulette
                 </h1>
-                {batchStats && (
+                {currentBatchStats && (
                     <div className="flex gap-2 text-[10px] bg-slate-900/50 px-2 py-0.5 rounded border border-slate-800 items-center">
-                        <span className={batchStats.wins > batchStats.losses ? "text-green-400 font-bold" : "text-red-400 font-bold"}>
-                            WR {((batchStats.wins / batchStats.totalSimulations) * 100).toFixed(0)}%
+                        <span className={currentBatchStats.wins > currentBatchStats.losses ? "text-green-400 font-bold" : "text-red-400 font-bold"}>
+                            WR {((currentBatchStats.wins / currentBatchStats.totalSimulations) * 100).toFixed(0)}%
                         </span>
                         <span className="text-slate-600">|</span>
-                        <span className={batchStats.avgFinalBankroll >= settings.startingBankroll ? "text-green-400" : "text-red-400"}>
-                            Avg ${batchStats.avgFinalBankroll.toFixed(0)}
+                        <span className={currentBatchStats.avgFinalBankroll >= settings.startingBankroll ? "text-green-400" : "text-red-400"}>
+                            Avg ${currentBatchStats.avgFinalBankroll.toFixed(0)}
                         </span>
                     </div>
                 )}
@@ -1005,7 +1133,7 @@ const App: React.FC = () => {
                             
                             {/* Reset Simulation Button */}
                             <button 
-                                onClick={() => { setBankroll(settings.startingBankroll); setHistory([]); setUndoStack(p => [...p, lanes]); }} 
+                                onClick={() => { setBankroll(settings.startingBankroll); setDisplayHistory([]); setBatches([]); setActiveBatchId(null); setUndoStack(p => [...p, lanes]); }} 
                                 disabled={simStatus !== 'IDLE'} 
                                 className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors disabled:opacity-30"
                                 title="Reset Simulation Data"
@@ -1138,11 +1266,11 @@ const App: React.FC = () => {
         {/* 4. CHARTS / LOGS */}
         <section className="grid grid-cols-1 md:grid-cols-12 gap-2">
              <div className="md:col-span-4 h-[280px]">
-                <SpinLog history={history} lanes={lanes} activeLaneId={activeLaneId} className="h-full" />
+                <SpinLog history={displayHistory} lanes={lanes} activeLaneId={activeLaneId} className="h-full" />
              </div>
              <div className="md:col-span-8 h-[280px]">
                 <StatsChart 
-                    data={history} 
+                    data={displayHistory} 
                     initialBalance={settings.startingBankroll}
                     lanes={lanes}
                     className="h-full"
@@ -1158,6 +1286,24 @@ const App: React.FC = () => {
                     settings={settings}
                     onUpdateSettings={setSettings}
                     strategyConfig={activeLane.config}
+                    
+                    // Sim Navigation
+                    currentSimIndex={currentSimIndex}
+                    totalSims={currentBatchHistories.length || 1}
+                    onNextSim={handleNextSim}
+                    onPrevSim={handlePrevSim}
+                    
+                    // Batch Navigation
+                    currentBatchIndex={getActiveBatchIndex()}
+                    totalBatches={batches.length}
+                    onNextBatch={handleNextBatch}
+                    onPrevBatch={handlePrevBatch}
+                    onDeleteBatch={handleDeleteBatch}
+                    
+                    // History List for Dropdown
+                    batchList={batchList}
+                    onSelectBatch={handleSelectBatch}
+                    onRenameBatch={handleRenameBatch}
                 />
              </div>
         </section>

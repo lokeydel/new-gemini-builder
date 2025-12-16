@@ -216,13 +216,15 @@ export function updateLaneAfterSpin(
 ): {
     profit: number;
     wager: number;
-    totalPayout: number; // Renamed from winnings
+    totalPayout: number; 
     updatedLaneState: RuntimeLane;
     wasReset: boolean;
     evaluatedBets: EvaluatedBet[];
+    progressionLabel: string;
 } {
     const nextLane = { ...lane };
     let wasReset = false;
+    let progressionLabel = '';
 
     // DELEGATE TO CANONICAL RESOLVER
     const resolution = resolveSpin(Number.MAX_SAFE_INTEGER, bets, result);
@@ -240,6 +242,14 @@ export function updateLaneAfterSpin(
     const isWin = resolution.netProfit >= 0;
 
     if (config.strategyMode === 'STATIC') {
+        // Generate label for the *current* spin state before updating
+        // This tells us what state generated this result
+        if (config.onLossAction === 'FIBONACCI' || config.onWinAction === 'FIBONACCI') {
+            progressionLabel = `Fib${nextLane.progressionIndex}`;
+        } else {
+            progressionLabel = `x${nextLane.multiplier}`;
+        }
+
         const next = getNextProgressionState(nextLane.multiplier, nextLane.progressionIndex, isWin, config);
         nextLane.multiplier = next.m;
         nextLane.progressionIndex = next.i;
@@ -250,8 +260,12 @@ export function updateLaneAfterSpin(
         }
 
     } else if (config.strategyMode === 'CHAIN') {
-        const action = isWin ? config.chainOnWin : config.chainOnLoss;
         const steps = config.chainSteps || [];
+        // Shorten label for cleaner logs
+        const currentStepName = steps[nextLane.chainIndex]?.name || 'Unknown';
+        progressionLabel = `Step ${nextLane.chainIndex + 1}`;
+
+        const action = isWin ? config.chainOnWin : config.chainOnLoss;
         const maxIndex = steps.length > 0 ? steps.length - 1 : 0;
         
         if (action === ProgressionAction.RESTART_CHAIN) {
@@ -272,6 +286,10 @@ export function updateLaneAfterSpin(
         }
     } else {
         // ROTATING
+        const unitLabel = nextLane.rotatingUnits > 1 ? `${nextLane.rotatingUnits}u` : '';
+        const target = precalculatedSequence[nextLane.rotatingIndex]?.displayName || 'None';
+        progressionLabel = `${target} ${unitLabel}`.trim();
+
         if (isWin) {
             nextLane.rotatingUnits = Math.max(config.minUnits, nextLane.rotatingUnits + config.onWinUnits);
             if (config.rotateOnWin) nextLane.rotatingIndex = (nextLane.rotatingIndex + 1) % (precalculatedSequence.length || 1);
@@ -284,10 +302,11 @@ export function updateLaneAfterSpin(
     return {
         profit: resolution.netProfit,
         wager: resolution.totalWager,
-        totalPayout: resolution.totalPayout, // Renamed
+        totalPayout: resolution.totalPayout, 
         updatedLaneState: nextLane,
         wasReset,
-        evaluatedBets: decoratedBets
+        evaluatedBets: decoratedBets,
+        progressionLabel
     };
 }
 
